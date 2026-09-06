@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -13,6 +14,7 @@ import org.junit.jupiter.api.Test;
  * the arithmetic twice would let one side change and the other keep answering the old number,
  * which shows up only as a connection that is refused.
  */
+@Tag("WorkflowTab_Port_260906_oo01")
 @DisplayName("DistributedActorSystem — deriving the publication port")
 class PublicationPortTest {
 

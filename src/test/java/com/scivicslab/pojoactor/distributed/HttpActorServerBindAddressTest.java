@@ -13,6 +13,7 @@ import java.net.NetworkInterface;
 
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import com.scivicslab.pojoactor.core.ActorSystem;
@@ -25,6 +26,7 @@ import com.scivicslab.pojoactor.core.ActorSystem;
  * a server. Both directions are asserted: that a caller on this machine gets through, and that
  * one arriving on another interface does not.
  */
+@Tag("WorkflowTab_BindAddress_260906_oo01")
 @DisplayName("HttpActorServer — the addresses it accepts callers from")
 class HttpActorServerBindAddressTest {
 

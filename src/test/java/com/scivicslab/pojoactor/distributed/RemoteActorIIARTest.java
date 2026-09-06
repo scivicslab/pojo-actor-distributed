@@ -11,6 +11,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import com.scivicslab.pojoactor.action.ActionResult;
@@ -28,6 +29,7 @@ import com.scivicslab.turingworkflow.workflow.CalcActor;
  * <p>Nothing here touches the network: the transport is a recorder, so what is asserted is what
  * the proxy sends and what it does with the answer, not that HTTP works.
  */
+@Tag("RemoteChildActor_Proxy_260906_oo01")
 @DisplayName("RemoteActorIIAR — an actor in another process, called by name")
 class RemoteActorIIARTest {
 
