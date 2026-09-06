@@ -44,7 +44,7 @@ import java.util.logging.Logger;
  * ActionResult result = remoteMath.callByActionName("add", "5,3");
  * }</pre>
  *
- * @since 3.0.0
+ * @since 1.0.0
  */
 public class RemoteActorRef implements CallableByActionName {
 

@@ -59,7 +59,7 @@ import java.util.logging.Logger;
  * server.close();
  * }</pre>
  *
- * @since 3.1.0
+ * @since 1.0.0
  */
 public class HttpActorServer implements AutoCloseable {
 

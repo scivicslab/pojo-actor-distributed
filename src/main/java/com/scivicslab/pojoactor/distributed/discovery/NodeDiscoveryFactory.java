@@ -65,20 +65,8 @@ import java.util.logging.Logger;
  * }
  * }</pre>
  *
- * <h2>Helper Method</h2>
- * <p>For even simpler usage, use {@link #createDistributedSystem(int)}:</p>
- * <pre>{@code
- * public static void main(String[] args) throws IOException {
- *     // Auto-detect environment and create system with all nodes registered
- *     DistributedActorSystem system = NodeDiscoveryFactory.createDistributedSystem(8080);
- *
- *     // All remote nodes are already registered - just add actors
- *     // ...
- * }
- * }</pre>
- *
  * @author devteam@scivicslab.com
- * @since 2.5.0
+ * @since 1.0.0
  */
 public class NodeDiscoveryFactory {
 

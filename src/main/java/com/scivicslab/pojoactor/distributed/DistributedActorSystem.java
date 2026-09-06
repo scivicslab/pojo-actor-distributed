@@ -61,7 +61,7 @@ import java.util.List;
  *     .build();
  * }</pre>
  *
- * @since 3.1.0
+ * @since 1.0.0
  */
 public class DistributedActorSystem implements AutoCloseable {
 

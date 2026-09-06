@@ -71,7 +71,7 @@ import java.util.logging.Logger;
  *               complete the matching Future by messageId
  * </pre>
  *
- * @since 3.1.0
+ * @since 1.0.0
  */
 public class KafkaTransport implements TransportLayer {
 

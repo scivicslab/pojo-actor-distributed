@@ -29,7 +29,7 @@ import com.scivicslab.turingworkflow.workflow.IIActorSystem;
  * Stands in, inside this actor system, for an actor that lives in another process, so that a
  * workflow can name it in {@code actor:} like any other.
  *
- * <p>An {@link Interpreter} resolves an action's actor to an {@link IIActorRef} and calls
+ * <p>An {@link com.scivicslab.turingworkflow.workflow.Interpreter} resolves an action's actor to an {@link IIActorRef} and calls
  * {@code callByActionName} on it. A {@link RemoteActorRef} knows how to reach another process but
  * is not an {@code ActorRef}, so it cannot be what the interpreter resolves to. This class is the
  * one layer between them.

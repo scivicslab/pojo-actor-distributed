@@ -6,7 +6,7 @@
 
   <groupId>com.scivicslab</groupId>
   <artifactId>pojo-actor-distributed</artifactId>
-  <version>1.0.0-SNAPSHOT</version>
+  <version>1.0.0</version>
   <packaging>jar</packaging>
 
   <name>pojo-actor-distributed</name>
@@ -16,12 +16,38 @@
     about the other.
   </description>
 
+  <url>https://github.com/scivicslab/pojo-actor-distributed</url>
+
+  <licenses>
+    <license>
+      <name>Apache License, Version 2.0</name>
+      <url>https://www.apache.org/licenses/LICENSE-2.0.txt</url>
+      <distribution>repo</distribution>
+    </license>
+  </licenses>
+
+  <developers>
+    <developer>
+      <id>scivicslab</id>
+      <name>Scivics Lab</name>
+      <email>devteam@scivicslab.com</email>
+      <organization>Scivics Lab</organization>
+      <organizationUrl>https://scivics-lab.com</organizationUrl>
+    </developer>
+  </developers>
+
+  <scm>
+    <connection>scm:git:git://github.com/scivicslab/pojo-actor-distributed.git</connection>
+    <developerConnection>scm:git:ssh://github.com:scivicslab/pojo-actor-distributed.git</developerConnection>
+    <url>https://github.com/scivicslab/pojo-actor-distributed</url>
+  </scm>
+
   <properties>
     <maven.compiler.source>21</maven.compiler.source>
     <maven.compiler.target>21</maven.compiler.target>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-    <pojo-actor.version>4.0.0-SNAPSHOT</pojo-actor.version>
-    <turing-workflow.version>4.0.0-SNAPSHOT</turing-workflow.version>
+    <pojo-actor.version>4.0.0</pojo-actor.version>
+    <turing-workflow.version>4.0.0</turing-workflow.version>
   </properties>
 
   <dependencies>
@@ -40,7 +66,7 @@
     <dependency>
       <groupId>com.fasterxml.jackson.core</groupId>
       <artifactId>jackson-databind</artifactId>
-      <version>2.17.0</version>
+      <version>2.20.0</version>
     </dependency>
 
     <!-- Only KafkaActorServer and KafkaTransport need this; an HTTP-only deployment does not. -->
@@ -81,6 +107,59 @@
         <configuration>
           <source>21</source>
           <target>21</target>
+        </configuration>
+      </plugin>
+
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-source-plugin</artifactId>
+        <version>3.3.0</version>
+        <executions>
+          <execution>
+            <id>attach-sources</id>
+            <goals>
+              <goal>jar-no-fork</goal>
+            </goals>
+          </execution>
+        </executions>
+      </plugin>
+
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-javadoc-plugin</artifactId>
+        <version>3.6.3</version>
+        <executions>
+          <execution>
+            <id>attach-javadocs</id>
+            <goals>
+              <goal>jar</goal>
+            </goals>
+          </execution>
+        </executions>
+      </plugin>
+
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-gpg-plugin</artifactId>
+        <version>3.1.0</version>
+        <executions>
+          <execution>
+            <id>sign-artifacts</id>
+            <phase>verify</phase>
+            <goals>
+              <goal>sign</goal>
+            </goals>
+          </execution>
+        </executions>
+      </plugin>
+
+      <plugin>
+        <groupId>org.sonatype.central</groupId>
+        <artifactId>central-publishing-maven-plugin</artifactId>
+        <version>0.11.0</version>
+        <extensions>true</extensions>
+        <configuration>
+          <publishingServerId>central</publishingServerId>
         </configuration>
       </plugin>
     </plugins>

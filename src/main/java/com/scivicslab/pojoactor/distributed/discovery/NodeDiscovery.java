@@ -54,7 +54,7 @@ import java.util.List;
  * }</pre>
  *
  * @author devteam@scivicslab.com
- * @since 2.5.0
+ * @since 1.0.0
  */
 public interface NodeDiscovery {
 

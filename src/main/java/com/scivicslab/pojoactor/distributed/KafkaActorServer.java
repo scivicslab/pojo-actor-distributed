@@ -53,7 +53,7 @@ import java.util.logging.Logger;
  * server.close();   // stops the consumer loop
  * }</pre>
  *
- * @since 3.1.0
+ * @since 1.0.0
  */
 public class KafkaActorServer implements AutoCloseable {
 
