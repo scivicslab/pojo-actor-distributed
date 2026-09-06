@@ -20,7 +20,7 @@ package com.scivicslab.pojoactor.distributed;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
-import com.scivicslab.pojoactor.core.ActionResult;
+import com.scivicslab.pojoactor.action.ActionResult;
 import com.scivicslab.pojoactor.distributed.RemoteActorRef;
 import com.scivicslab.turingworkflow.workflow.IIActorRef;
 import com.scivicslab.turingworkflow.workflow.IIActorSystem;

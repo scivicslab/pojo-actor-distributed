@@ -1,9 +1,9 @@
 package com.scivicslab.pojoactor.distributed;
 
-import com.scivicslab.pojoactor.core.ActionResult;
+import com.scivicslab.pojoactor.action.ActionResult;
 import com.scivicslab.pojoactor.core.ActorRef;
 import com.scivicslab.pojoactor.core.ActorSystem;
-import com.scivicslab.pojoactor.core.CallableByActionName;
+import com.scivicslab.pojoactor.action.CallableByActionName;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
@@ -68,7 +68,7 @@ class HttpActorServerTest {
     // ---- E2E test: real HTTP server on loopback ----
 
     /** Simple actor that supports add/echo via CallableByActionName. */
-    static class CalcActor implements com.scivicslab.pojoactor.core.CallableByActionName {
+    static class CalcActor implements com.scivicslab.pojoactor.action.CallableByActionName {
         @Override
         public ActionResult callByActionName(String action, String args) {
             return switch (action) {

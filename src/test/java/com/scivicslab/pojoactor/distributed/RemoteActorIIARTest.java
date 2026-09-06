@@ -13,7 +13,7 @@ import java.util.List;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
-import com.scivicslab.pojoactor.core.ActionResult;
+import com.scivicslab.pojoactor.action.ActionResult;
 import com.scivicslab.pojoactor.distributed.ActorMessage;
 import com.scivicslab.pojoactor.distributed.NodeInfo;
 import com.scivicslab.pojoactor.distributed.RemoteActorRef;

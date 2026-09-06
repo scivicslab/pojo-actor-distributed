@@ -17,7 +17,7 @@
 
 package com.scivicslab.pojoactor.distributed;
 
-import com.scivicslab.pojoactor.core.ActionResult;
+import com.scivicslab.pojoactor.action.ActionResult;
 import com.scivicslab.pojoactor.distributed.ActorMessage;
 import com.scivicslab.pojoactor.distributed.NodeInfo;
 import com.scivicslab.pojoactor.distributed.RemoteActorRef;

@@ -17,9 +17,9 @@
 
 package com.scivicslab.pojoactor.distributed;
 
-import com.scivicslab.pojoactor.core.ActionResult;
+import com.scivicslab.pojoactor.action.ActionResult;
 import com.scivicslab.pojoactor.core.ActorSystem;
-import com.scivicslab.pojoactor.core.CallableByActionName;
+import com.scivicslab.pojoactor.action.CallableByActionName;
 import com.scivicslab.pojoactor.distributed.transport.KafkaTransport;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;

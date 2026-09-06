@@ -17,8 +17,8 @@
 
 package com.scivicslab.pojoactor.distributed;
 
-import com.scivicslab.pojoactor.core.Action;
-import com.scivicslab.pojoactor.core.ActionResult;
+import com.scivicslab.pojoactor.action.Action;
+import com.scivicslab.pojoactor.action.ActionResult;
 import com.scivicslab.turingworkflow.workflow.IIActorRef;
 import com.scivicslab.pojoactor.distributed.DistributedIIActorSystem;
 import com.scivicslab.pojoactor.distributed.RemoteActorRef;

@@ -1,6 +1,6 @@
 package com.scivicslab.pojoactor.distributed;
 
-import com.scivicslab.pojoactor.core.ActionResult;
+import com.scivicslab.pojoactor.action.ActionResult;
 import com.scivicslab.pojoactor.core.ActorSystem;
 import com.scivicslab.pojoactor.distributed.discovery.NodeDiscovery;
 import com.scivicslab.pojoactor.distributed.transport.StubTransport;

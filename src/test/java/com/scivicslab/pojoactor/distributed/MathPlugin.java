@@ -2,8 +2,8 @@ package com.scivicslab.pojoactor.distributed;
 
 import org.json.JSONArray;
 
-import com.scivicslab.pojoactor.core.ActionResult;
-import com.scivicslab.pojoactor.core.CallableByActionName;
+import com.scivicslab.pojoactor.action.ActionResult;
+import com.scivicslab.pojoactor.action.CallableByActionName;
 
 /**
  * Test fixture: an actor that answers by action name, so a test can check that a call made in one
