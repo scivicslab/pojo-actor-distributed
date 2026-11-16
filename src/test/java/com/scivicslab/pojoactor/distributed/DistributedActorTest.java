@@ -65,11 +65,11 @@ class DistributedActorTest {
         port2 = freePort();
         NodeInfo n1 = new NodeInfo("node1", "127.0.0.1", port1);
         NodeInfo n2 = new NodeInfo("node2", "127.0.0.1", port2);
-        system1 = DistributedIIActorSystem.builder()
+        system1 = DistributedIIActorSystem.builder().noDeduplication()
                 .discovery(new StaticNodeDiscovery(n1, List.of(n2)))
                 .allowedActions(mathActions("math"))
                 .build();
-        system2 = DistributedIIActorSystem.builder()
+        system2 = DistributedIIActorSystem.builder().noDeduplication()
                 .discovery(new StaticNodeDiscovery(n2, List.of(n1)))
                 .allowedActions(mathActions("math"))
                 .build();
@@ -125,7 +125,7 @@ class DistributedActorTest {
         try {
             int p = freePort();
             NodeInfo n1 = new NodeInfo("node1", "127.0.0.1", p);
-            system1 = DistributedIIActorSystem.builder()
+            system1 = DistributedIIActorSystem.builder().noDeduplication()
                     .discovery(new StaticNodeDiscovery(n1, List.of()))
                     .allowedActions(Set.of(
                             new AllowListDispatcher.AllowedAction("math", "add"),
@@ -170,7 +170,7 @@ class DistributedActorTest {
     @Test
     void thereIsNoServerOfItsOwnBeforeOneIsStarted() throws IOException {
         int p = freePort();
-        DistributedIIActorSystem idle = DistributedIIActorSystem.builder()
+        DistributedIIActorSystem idle = DistributedIIActorSystem.builder().noDeduplication()
                 .discovery(new StaticNodeDiscovery(new NodeInfo("idle", "127.0.0.1", p), List.of()))
                 .build();
         try {

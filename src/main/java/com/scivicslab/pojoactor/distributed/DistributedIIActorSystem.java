@@ -216,6 +216,7 @@ public class DistributedIIActorSystem extends IIActorSystem implements AutoClose
         private NodeDiscovery discovery;
         private Set<AllowListDispatcher.AllowedAction> allowedActions = Set.of();
         private MessageIdStore messageIds;
+        private boolean deduplicationChosen;
         private java.time.Duration callTimeout = java.time.Duration.ofSeconds(30);
 
         /**
@@ -229,13 +230,39 @@ public class DistributedIIActorSystem extends IIActorSystem implements AutoClose
 
         /**
          * Makes the receiver drop the second and later copies of a message with the same
-         * {@code messageId}, for HTTP and Kafka alike. Without it every copy runs. A sender that
-         * resends, and Kafka, which can deliver a message twice, make duplicates normal, so a
-         * receiver whose actions are not safe to repeat should set it. The caller owns the store
-         * and closes it.
+         * {@code messageId}, for HTTP and Kafka alike. The caller owns the store and closes it.
+         *
+         * <p>One of this and {@link #noDeduplication()} must be called: {@link #build()} refuses
+         * to build without a choice. A sender that resends, and Kafka, which can deliver a
+         * message twice, make duplicates normal, so a receiver whose actions are not safe to
+         * repeat should use a store.</p>
          */
         public Builder deduplicateWith(MessageIdStore store) {
+            if (store == null) {
+                throw new IllegalArgumentException("store must not be null; call noDeduplication() to opt out");
+            }
+            if (deduplicationChosen && messageIds == null) {
+                throw new IllegalStateException("noDeduplication() was already chosen");
+            }
             this.messageIds = store;
+            this.deduplicationChosen = true;
+            return this;
+        }
+
+        /**
+         * Chooses to run every copy of a message. <strong>Every duplicate will run:</strong> a
+         * message sent twice, a resend after a lost receipt, and a Kafka message delivered twice
+         * each run the action again. Choose this only when the actions are safe to repeat, or when
+         * the sender never sends the same message twice.
+         *
+         * <p>One of this and {@link #deduplicateWith(MessageIdStore)} must be called.</p>
+         */
+        public Builder noDeduplication() {
+            if (deduplicationChosen && messageIds != null) {
+                throw new IllegalStateException("deduplicateWith(store) was already chosen");
+            }
+            this.messageIds = null;
+            this.deduplicationChosen = true;
             return this;
         }
 
@@ -264,6 +291,10 @@ public class DistributedIIActorSystem extends IIActorSystem implements AutoClose
         }
 
         public DistributedIIActorSystem build() {
+            if (!deduplicationChosen) {
+                throw new IllegalStateException(
+                        "Choose how duplicate messages are handled: deduplicateWith(store) or noDeduplication()");
+            }
             if (discovery == null) discovery = NodeDiscoveryFactory.autoDetect();
             return new DistributedIIActorSystem(this);
         }

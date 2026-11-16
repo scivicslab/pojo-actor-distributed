@@ -42,7 +42,7 @@ class DistributedIIActorSystemTest {
         StubTransport stub = new StubTransport();
         stub.presetResult = new ActionResult(true, "pong");
 
-        DistributedIIActorSystem system = DistributedIIActorSystem.builder()
+        DistributedIIActorSystem system = DistributedIIActorSystem.builder().noDeduplication()
                 .transport(stub)
                 .discovery(new StubDiscovery(nodeA, nodeB))
                 .build();
@@ -61,7 +61,7 @@ class DistributedIIActorSystemTest {
 
     @Test
     void builder_shouldExposeDiscoveredNodes() {
-        DistributedIIActorSystem system = DistributedIIActorSystem.builder()
+        DistributedIIActorSystem system = DistributedIIActorSystem.builder().noDeduplication()
                 .transport(new StubTransport())
                 .discovery(new StubDiscovery(nodeA, nodeB))
                 .build();
@@ -76,7 +76,7 @@ class DistributedIIActorSystemTest {
 
     @Test
     void mergedSystemIsAnIIActorSystem() {
-        DistributedIIActorSystem system = DistributedIIActorSystem.builder()
+        DistributedIIActorSystem system = DistributedIIActorSystem.builder().noDeduplication()
                 .transport(new StubTransport())
                 .discovery(new StubDiscovery(nodeA, nodeB))
                 .build();
@@ -89,7 +89,7 @@ class DistributedIIActorSystemTest {
 
     @Test
     void peersFromDiscoveryAreRegisteredWithoutMe() {
-        DistributedIIActorSystem system = DistributedIIActorSystem.builder()
+        DistributedIIActorSystem system = DistributedIIActorSystem.builder().noDeduplication()
                 .transport(new StubTransport())
                 .discovery(new StubDiscovery(nodeA, nodeB))
                 .build();
@@ -103,7 +103,7 @@ class DistributedIIActorSystemTest {
 
     @Test
     void myNode_shouldMatchDiscovery() {
-        DistributedIIActorSystem system = DistributedIIActorSystem.builder()
+        DistributedIIActorSystem system = DistributedIIActorSystem.builder().noDeduplication()
                 .transport(new StubTransport())
                 .discovery(new StubDiscovery(nodeA, nodeB))
                 .build();
@@ -113,5 +113,51 @@ class DistributedIIActorSystemTest {
         assertEquals(8081, system.getMyNode().getPort());
 
         system.close();
+    }
+
+    // ---- deduplication is chosen, never defaulted ----
+
+    @Test
+    void build_refusesWhenDeduplicationWasNotChosen() {
+        var builder = DistributedIIActorSystem.builder()
+                .transport(new StubTransport())
+                .discovery(new StubDiscovery(nodeA, nodeB));
+
+        IllegalStateException e = assertThrows(IllegalStateException.class, builder::build);
+        assertTrue(e.getMessage().contains("deduplicateWith") && e.getMessage().contains("noDeduplication"),
+                e.getMessage());
+    }
+
+    @Test
+    void build_acceptsEitherChoice() {
+        DistributedIIActorSystem a = DistributedIIActorSystem.builder()
+                .transport(new StubTransport())
+                .discovery(new StubDiscovery(nodeA, nodeB))
+                .deduplicateWith(new InMemoryMessageIdStore(10, java.time.Duration.ofMinutes(1)))
+                .build();
+        DistributedIIActorSystem b = DistributedIIActorSystem.builder()
+                .transport(new StubTransport())
+                .discovery(new StubDiscovery(nodeA, nodeB))
+                .noDeduplication()
+                .build();
+        a.close();
+        b.close();
+    }
+
+    @Test
+    void choosingBothIsAMistake() {
+        var builder = DistributedIIActorSystem.builder()
+                .deduplicateWith(new InMemoryMessageIdStore(10, java.time.Duration.ofMinutes(1)));
+        assertThrows(IllegalStateException.class, builder::noDeduplication);
+
+        var other = DistributedIIActorSystem.builder().noDeduplication();
+        assertThrows(IllegalStateException.class,
+                () -> other.deduplicateWith(new InMemoryMessageIdStore(10, java.time.Duration.ofMinutes(1))));
+    }
+
+    @Test
+    void deduplicateWithNull_isRejected() {
+        assertThrows(IllegalArgumentException.class,
+                () -> DistributedIIActorSystem.builder().deduplicateWith(null));
     }
 }

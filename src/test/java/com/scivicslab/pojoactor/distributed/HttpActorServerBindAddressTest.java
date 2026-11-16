@@ -119,7 +119,7 @@ class HttpActorServerBindAddressTest {
         Assumptions.assumeTrue(lan != null, "no non-loopback IPv4 address on this machine");
 
         int port = freePort();
-        DistributedIIActorSystem system = DistributedIIActorSystem.builder()
+        DistributedIIActorSystem system = DistributedIIActorSystem.builder().noDeduplication()
                 .discovery(new OneNodeDiscovery(port))
                 .build();
         try {

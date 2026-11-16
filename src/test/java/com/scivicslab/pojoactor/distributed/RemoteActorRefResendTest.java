@@ -92,7 +92,7 @@ class RemoteActorRefResendTest {
     @Test
     void callByActionName_withoutATimeout_usesTheWaitTheSystemWasBuiltWith() {
         StubTransport transport = new StubTransport();
-        DistributedIIActorSystem system = DistributedIIActorSystem.builder()
+        DistributedIIActorSystem system = DistributedIIActorSystem.builder().noDeduplication()
                 .transport(transport)
                 .callTimeout(Duration.ofSeconds(5))
                 .discovery(new StaticNodeDiscovery(new NodeInfo("me", "127.0.0.1", 1),
