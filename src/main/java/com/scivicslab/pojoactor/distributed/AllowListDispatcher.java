@@ -50,7 +50,10 @@ public class AllowListDispatcher implements Dispatcher {
     }
 
     @Override
-    public Dispatch dispatch(String actorName, String actionName, String args) {
+    public Dispatch dispatch(ActorMessage message) {
+        String actorName = message.getActorName();
+        String actionName = message.getActionName();
+        String args = message.getArgs();
         ActorRef<?> ref = allowed.contains(new AllowedAction(actorName, actionName))
                 ? actorSystem.getActor(actorName) : null;
         if (ref == null) {

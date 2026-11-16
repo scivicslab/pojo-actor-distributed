@@ -57,8 +57,8 @@ class KafkaActorServerTest {
     }
 
     private Dispatcher accepting() {
-        return (actor, action, args) -> {
-            events.add("dispatch:" + actor + "/" + action);
+        return m -> {
+            events.add("dispatch:" + m.getActorName() + "/" + m.getActionName());
             return new Dispatcher.Dispatch(true,
                     CompletableFuture.completedFuture(new ActionResult(true, "ok")));
         };
@@ -87,9 +87,9 @@ class KafkaActorServerTest {
     void refusedMessageIsSkippedAndItsPositionRecorded() {
         addRecord(0, message("worker", "forbidden"));
         addRecord(1, message("worker", "run"));
-        Dispatcher refuseFirst = (actor, action, args) -> {
-            events.add("dispatch:" + actor + "/" + action);
-            return action.equals("forbidden") ? Dispatcher.Dispatch.refused("Not allowed")
+        Dispatcher refuseFirst = m -> {
+            events.add("dispatch:" + m.getActorName() + "/" + m.getActionName());
+            return m.getActionName().equals("forbidden") ? Dispatcher.Dispatch.refused("Not allowed")
                     : new Dispatcher.Dispatch(true,
                             CompletableFuture.completedFuture(new ActionResult(true, "ok")));
         };
@@ -121,9 +121,9 @@ class KafkaActorServerTest {
         addRecord(1, message("worker", "boom"));
         addRecord(2, message("worker", "third"));
         boolean[] fail = {true};
-        Dispatcher flaky = (actor, action, args) -> {
-            events.add("dispatch:" + action);
-            if (action.equals("boom") && fail[0]) throw new IllegalStateException("mailbox down");
+        Dispatcher flaky = m -> {
+            events.add("dispatch:" + m.getActionName());
+            if (m.getActionName().equals("boom") && fail[0]) throw new IllegalStateException("mailbox down");
             return new Dispatcher.Dispatch(true,
                     CompletableFuture.completedFuture(new ActionResult(true, "ok")));
         };
@@ -150,5 +150,20 @@ class KafkaActorServerTest {
         KafkaActorServer server = new KafkaActorServer(accepting(), me, consumer);
         server.pollOnce(Duration.ZERO);
         assertTrue(events.isEmpty());
+    }
+
+    /** The same message read twice (redelivery after a crash) reaches the actor once. */
+    @Test
+    void aMessageReadTwice_reachesTheDispatcherChainOnce_andBothPositionsAreRecorded() {
+        ActorMessage m = new ActorMessage("worker", "run", "args");
+        addRecord(0, m.toJson());
+        addRecord(1, m.toJson());
+        Dispatcher dedup = new DedupDispatcher(accepting(),
+                new InMemoryMessageIdStore(100, Duration.ofHours(1)));
+        KafkaActorServer server = new KafkaActorServer(dedup, me, consumer);
+
+        server.pollOnce(Duration.ZERO);
+
+        assertEquals(List.of("dispatch:worker/run", "commit:2"), events);
     }
 }

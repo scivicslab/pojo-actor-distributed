@@ -70,7 +70,9 @@ public class DistributedIIActorSystem extends IIActorSystem implements AutoClose
         this.transport = builder.transport;
         this.discovery = builder.discovery;
         this.myNode = new NodeInfo(discovery.getMyNodeId(), discovery.getMyHost(), discovery.getMyPort());
-        this.dispatcher = new AllowListDispatcher(this, builder.allowedActions);
+        Dispatcher allowList = new AllowListDispatcher(this, builder.allowedActions);
+        this.dispatcher = builder.messageIds == null ? allowList
+                : new DedupDispatcher(allowList, builder.messageIds);
         for (NodeInfo node : discovery.getAllNodes()) {
             if (!node.getNodeId().equals(myNode.getNodeId())) {
                 remoteNodes.put(node.getNodeId(), node);
@@ -211,6 +213,7 @@ public class DistributedIIActorSystem extends IIActorSystem implements AutoClose
         private TransportLayer transport = new HttpTransport();
         private NodeDiscovery discovery;
         private Set<AllowListDispatcher.AllowedAction> allowedActions = Set.of();
+        private MessageIdStore messageIds;
 
         /**
          * Sets the (actor, action) pairs that remote callers may invoke. Defaults to none:
@@ -218,6 +221,18 @@ public class DistributedIIActorSystem extends IIActorSystem implements AutoClose
          */
         public Builder allowedActions(Set<AllowListDispatcher.AllowedAction> allowed) {
             this.allowedActions = Set.copyOf(allowed);
+            return this;
+        }
+
+        /**
+         * Makes the receiver drop the second and later copies of a message with the same
+         * {@code messageId}, for HTTP and Kafka alike. Without it every copy runs. A sender that
+         * resends, and Kafka, which can deliver a message twice, make duplicates normal, so a
+         * receiver whose actions are not safe to repeat should set it. The caller owns the store
+         * and closes it.
+         */
+        public Builder deduplicateWith(MessageIdStore store) {
+            this.messageIds = store;
             return this;
         }
 

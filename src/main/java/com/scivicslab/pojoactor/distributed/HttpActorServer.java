@@ -170,8 +170,10 @@ public class HttpActorServer implements AutoCloseable {
                 return;
             }
 
-            Dispatcher.Dispatch dispatch = dispatcher.dispatch(
-                    actorName, message.getActionName(), message.getArgs());
+            // The name in the path decides the target; the rest comes from the body.
+            Dispatcher.Dispatch dispatch = dispatcher.dispatch(new ActorMessage(
+                    actorName, message.getActionName(), message.getArgs(),
+                    message.getMessageId(), message.getReplyTo()));
 
             if (send) {
                 // The receipt: the call is in the mailbox. Do not wait for it to run.

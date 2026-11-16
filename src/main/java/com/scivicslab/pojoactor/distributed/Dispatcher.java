@@ -34,12 +34,16 @@ public interface Dispatcher {
      * Checks the call and, if it is allowed, puts it in the target actor's mailbox.
      * Returns without waiting for the action to run.
      *
-     * @param actorName  the name of the local actor
-     * @param actionName the name of the action
-     * @param args       the arguments for the action
+     * @param message the call: target actor, action, arguments and the {@code messageId} that
+     *                lets a receiver drop a second copy
      * @return the outcome: {@link Dispatch#accepted()} is the receipt
      */
-    Dispatch dispatch(String actorName, String actionName, String args);
+    Dispatch dispatch(ActorMessage message);
+
+    /** Dispatches a call that has no id of its own to remember: one is made up. */
+    default Dispatch dispatch(String actorName, String actionName, String args) {
+        return dispatch(new ActorMessage(actorName, actionName, args));
+    }
 
     /**
      * The outcome of {@link #dispatch}.

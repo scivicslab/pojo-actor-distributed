@@ -201,4 +201,45 @@ class DistributedActorTest {
         @Action("greet")
         public ActionResult greet(String args) { return this.object.callByActionName("greet", args); }
     }
+
+    /** Counts how many times its action really ran. */
+    static class Counter implements com.scivicslab.pojoactor.action.CallableByActionName {
+        final java.util.concurrent.atomic.AtomicInteger runs = new java.util.concurrent.atomic.AtomicInteger();
+
+        @Override
+        public ActionResult callByActionName(String action, String args) {
+            runs.incrementAndGet();
+            return new ActionResult(true, "counted");
+        }
+    }
+
+    /** The same message sent twice (a resend after a lost receipt) runs once. */
+    @Test
+    void aMessageSentTwiceWithTheSameIdRunsOnce() throws Exception {
+        int p = freePort();
+        NodeInfo n = new NodeInfo("dedup", "127.0.0.1", p);
+        DistributedIIActorSystem receiver = DistributedIIActorSystem.builder()
+                .discovery(new StaticNodeDiscovery(n, List.of()))
+                .allowedActions(Set.of(new AllowListDispatcher.AllowedAction("counter", "tick")))
+                .deduplicateWith(new InMemoryMessageIdStore(100, java.time.Duration.ofHours(1)))
+                .build();
+        try {
+            Counter counter = new Counter();
+            receiver.actorOf("counter", counter);
+            receiver.startHttpServer("127.0.0.1", p);
+            com.scivicslab.pojoactor.distributed.transport.HttpTransport http =
+                    new com.scivicslab.pojoactor.distributed.transport.HttpTransport();
+            ActorMessage message = new ActorMessage("counter", "tick", "", "fixed-id", null);
+
+            Receipt first = http.send(n, message);
+            Receipt second = http.send(n, message);
+            Thread.sleep(300);
+
+            assertTrue(first.accepted());
+            assertTrue(second.accepted());
+            assertEquals(1, counter.runs.get());
+        } finally {
+            receiver.terminate();
+        }
+    }
 }
