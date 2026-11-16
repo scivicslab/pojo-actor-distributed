@@ -7,7 +7,7 @@ Decided: remote calls go through the target actor's mailbox; a `send` receipt me
 - [x] Step 0: W206 build pod works (`tasks/w206-build.sh`), baseline `mvn test` is green
 - [x] Step 1: shared `Dispatcher` (allow-list check, then run through the target actor's mailbox)
 - [x] Step 2: `HttpActorServer` uses the `Dispatcher`
-- [ ] Step 3: `RemoteActorRef.send` returns a receipt
+- [x] Step 3: `RemoteActorRef.send` returns a receipt
 - [ ] Step 4: Kafka path (`KafkaActorServer` uses the `Dispatcher`, explicit success field, acks=all, manual commit after mailbox accept)
 - [ ] Step 5: peer list `NodeDiscovery` (configured node list)
 - [ ] Step 6: `messageId` dedup store (replaceable, survives restart)

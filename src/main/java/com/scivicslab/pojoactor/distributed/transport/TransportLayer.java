@@ -20,6 +20,7 @@ package com.scivicslab.pojoactor.distributed.transport;
 import com.scivicslab.pojoactor.action.ActionResult;
 import com.scivicslab.pojoactor.distributed.ActorMessage;
 import com.scivicslab.pojoactor.distributed.NodeInfo;
+import com.scivicslab.pojoactor.distributed.Receipt;
 
 import java.time.Duration;
 
@@ -35,12 +36,14 @@ import java.time.Duration;
 public interface TransportLayer extends AutoCloseable {
 
     /**
-     * Sends a message to an actor on the target node without waiting for a result (fire-and-forget).
+     * Sends a message to an actor on the target node. Returns once the message is accepted (or
+     * refused); does not wait for the action to run, and never throws for a network failure.
      *
      * @param target  the destination node
      * @param message the actor message to send
+     * @return the receipt: accepted, or not accepted with the reason
      */
-    void send(NodeInfo target, ActorMessage message);
+    Receipt send(NodeInfo target, ActorMessage message);
 
     /**
      * Sends a message to an actor on the target node and waits for the result.

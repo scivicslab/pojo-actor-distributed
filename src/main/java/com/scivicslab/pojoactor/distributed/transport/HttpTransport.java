@@ -22,6 +22,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.scivicslab.pojoactor.action.ActionResult;
 import com.scivicslab.pojoactor.distributed.ActorMessage;
 import com.scivicslab.pojoactor.distributed.NodeInfo;
+import com.scivicslab.pojoactor.distributed.Receipt;
 
 import java.io.IOException;
 import java.net.URI;
@@ -55,20 +56,26 @@ public class HttpTransport implements TransportLayer {
     }
 
     /**
-     * Sends a message without waiting for a response.
-     * Uses a best-effort HTTP POST; errors are logged but not propagated.
+     * Sends a message to {@code /actor/{name}/send} and returns the receipt: accepted when the
+     * remote mailbox took it (2xx). Does not wait for the action to run. A refusal, an error
+     * answer or an unreachable node gives a receipt that is not accepted; nothing is thrown.
      */
     @Override
-    public void send(NodeInfo target, ActorMessage message) {
+    public Receipt send(NodeInfo target, ActorMessage message) {
         try {
-            HttpRequest request = buildRequest(target, message, Duration.ofSeconds(30));
-            httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofString())
-                    .exceptionally(ex -> {
-                        logger.log(Level.WARNING, "Fire-and-forget send failed to " + target.getUrl(), ex);
-                        return null;
-                    });
-        } catch (Exception e) {
+            HttpRequest request = buildRequest(target, message, Duration.ofSeconds(30), "send");
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            int status = response.statusCode();
+            if (status >= 200 && status < 300) {
+                return Receipt.accepted(message.getMessageId());
+            }
+            return Receipt.refused(message.getMessageId(), "HTTP " + status + ": " + response.body());
+        } catch (IOException e) {
             logger.log(Level.WARNING, "Failed to send message to " + target.getUrl(), e);
+            return Receipt.refused(message.getMessageId(), "Network error: " + e.getMessage());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return Receipt.refused(message.getMessageId(), "Interrupted");
         }
     }
 
@@ -78,7 +85,7 @@ public class HttpTransport implements TransportLayer {
     @Override
     public ActionResult sendAndWait(NodeInfo target, ActorMessage message, Duration timeout) {
         try {
-            HttpRequest request = buildRequest(target, message, timeout);
+            HttpRequest request = buildRequest(target, message, timeout, "invoke");
             logger.fine(String.format("HTTP sendAndWait → %s actor=%s action=%s",
                     target.getUrl(), message.getActorName(), message.getActionName()));
             HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
@@ -94,8 +101,8 @@ public class HttpTransport implements TransportLayer {
         // HttpClient manages its own connection pool; nothing explicit to close
     }
 
-    private HttpRequest buildRequest(NodeInfo target, ActorMessage message, Duration timeout) {
-        String url = String.format("%s/actor/%s/invoke", target.getUrl(), message.getActorName());
+    private HttpRequest buildRequest(NodeInfo target, ActorMessage message, Duration timeout, String verb) {
+        String url = String.format("%s/actor/%s/%s", target.getUrl(), message.getActorName(), verb);
         return HttpRequest.newBuilder()
                 .uri(URI.create(url))
                 .header("Content-Type", "application/json")

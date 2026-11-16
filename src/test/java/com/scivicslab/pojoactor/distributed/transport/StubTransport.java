@@ -3,6 +3,7 @@ package com.scivicslab.pojoactor.distributed.transport;
 import com.scivicslab.pojoactor.action.ActionResult;
 import com.scivicslab.pojoactor.distributed.ActorMessage;
 import com.scivicslab.pojoactor.distributed.NodeInfo;
+import com.scivicslab.pojoactor.distributed.Receipt;
 
 import java.time.Duration;
 import java.util.ArrayList;
@@ -13,10 +14,13 @@ public class StubTransport implements TransportLayer {
 
     public final List<ActorMessage> sent = new ArrayList<>();
     public ActionResult presetResult = new ActionResult(true, "stub-result");
+    public boolean accept = true;
 
     @Override
-    public void send(NodeInfo target, ActorMessage message) {
+    public Receipt send(NodeInfo target, ActorMessage message) {
         sent.add(message);
+        return accept ? Receipt.accepted(message.getMessageId())
+                : Receipt.refused(message.getMessageId(), "stub refused");
     }
 
     @Override

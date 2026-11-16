@@ -39,7 +39,10 @@ class RemoteActorIIARTest {
         ActionResult answer = new ActionResult(true, "ok");
         RuntimeException failure;
 
-        @Override public void send(NodeInfo target, ActorMessage message) { sent.add(message); }
+        @Override public Receipt send(NodeInfo target, ActorMessage message) {
+            sent.add(message);
+            return Receipt.accepted(message.getMessageId());
+        }
 
         @Override
         public ActionResult sendAndWait(NodeInfo target, ActorMessage message, Duration timeout) {

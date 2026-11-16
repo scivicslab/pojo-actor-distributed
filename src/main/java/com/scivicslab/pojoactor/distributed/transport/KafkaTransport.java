@@ -20,6 +20,7 @@ package com.scivicslab.pojoactor.distributed.transport;
 import com.scivicslab.pojoactor.action.ActionResult;
 import com.scivicslab.pojoactor.distributed.ActorMessage;
 import com.scivicslab.pojoactor.distributed.NodeInfo;
+import com.scivicslab.pojoactor.distributed.Receipt;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
@@ -104,14 +105,21 @@ public class KafkaTransport implements TransportLayer {
     }
 
     @Override
-    public void send(NodeInfo target, ActorMessage message) {
+    public Receipt send(NodeInfo target, ActorMessage message) {
         String topic = inboxTopic(target.getNodeId());
         String json = message.toJson();
-        producer.send(new ProducerRecord<>(topic, message.getMessageId(), json), (meta, ex) -> {
-            if (ex != null) {
-                logger.log(Level.WARNING, "Failed to send message to topic " + topic, ex);
-            }
-        });
+        try {
+            // The receipt is the broker's acknowledgement: stored in the inbox, not yet read.
+            producer.send(new ProducerRecord<>(topic, message.getMessageId(), json))
+                    .get(30, java.util.concurrent.TimeUnit.SECONDS);
+            return Receipt.accepted(message.getMessageId());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return Receipt.refused(message.getMessageId(), "Interrupted");
+        } catch (Exception e) {
+            logger.log(Level.WARNING, "Failed to send message to topic " + topic, e);
+            return Receipt.refused(message.getMessageId(), "Kafka error: " + e.getMessage());
+        }
     }
 
     @Override

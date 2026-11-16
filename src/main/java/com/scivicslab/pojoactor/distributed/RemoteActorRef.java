@@ -93,6 +93,24 @@ public class RemoteActorRef implements CallableByActionName {
         return transport.sendAndWait(nodeInfo, message, DEFAULT_TIMEOUT);
     }
 
+    /**
+     * Sends an action to the remote actor without waiting for it to run.
+     *
+     * <p>The receipt says whether the remote side accepted the message into the actor's mailbox.
+     * It does not say the action has run or succeeded. When the receipt is not accepted, the
+     * caller may send again.</p>
+     *
+     * @param actionName the name of the action to invoke
+     * @param args       the arguments for the action
+     * @return the receipt
+     */
+    public Receipt send(String actionName, String args) {
+        ActorMessage message = new ActorMessage(actorName, actionName, args);
+        logger.fine(String.format("RemoteActorRef.send → node=%s actor=%s action=%s",
+                nodeInfo.getAddress(), actorName, actionName));
+        return transport.send(nodeInfo, message);
+    }
+
     public String getActorName() {
         return actorName;
     }
