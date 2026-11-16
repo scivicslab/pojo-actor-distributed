@@ -23,6 +23,7 @@ import com.scivicslab.pojoactor.distributed.transport.HttpTransport;
 import com.scivicslab.pojoactor.distributed.transport.TransportLayer;
 
 import java.time.Duration;
+import java.util.UUID;
 import java.util.logging.Logger;
 
 /**
@@ -54,6 +55,7 @@ public class RemoteActorRef implements CallableByActionName {
     private final String actorName;
     private final NodeInfo nodeInfo;
     private final TransportLayer transport;
+    private final Duration defaultTimeout;
 
     /**
      * Constructs a RemoteActorRef using the default HTTP transport.
@@ -73,9 +75,20 @@ public class RemoteActorRef implements CallableByActionName {
      * @param transport the transport to use for message delivery
      */
     public RemoteActorRef(String actorName, NodeInfo nodeInfo, TransportLayer transport) {
+        this(actorName, nodeInfo, transport, DEFAULT_TIMEOUT);
+    }
+
+    /**
+     * Constructs a RemoteActorRef with an explicit transport and the wait that
+     * {@link #callByActionName(String, String)} uses.
+     *
+     * @param defaultTimeout how long a synchronous call waits for the result
+     */
+    public RemoteActorRef(String actorName, NodeInfo nodeInfo, TransportLayer transport, Duration defaultTimeout) {
         this.actorName = actorName;
         this.nodeInfo = nodeInfo;
         this.transport = transport;
+        this.defaultTimeout = defaultTimeout;
     }
 
     /**
@@ -87,10 +100,21 @@ public class RemoteActorRef implements CallableByActionName {
      */
     @Override
     public ActionResult callByActionName(String actionName, String args) {
+        return callByActionName(actionName, args, defaultTimeout);
+    }
+
+    /**
+     * Invokes an action on the remote actor and waits at most {@code timeout} for the result.
+     * Use this for short calls; a long piece of work is sent with {@link #send} and answered by
+     * a message of its own.
+     *
+     * @param timeout how long to wait for the result
+     */
+    public ActionResult callByActionName(String actionName, String args, Duration timeout) {
         ActorMessage message = new ActorMessage(actorName, actionName, args);
         logger.fine(String.format("RemoteActorRef.callByActionName → node=%s actor=%s action=%s",
                 nodeInfo.getAddress(), actorName, actionName));
-        return transport.sendAndWait(nodeInfo, message, DEFAULT_TIMEOUT);
+        return transport.sendAndWait(nodeInfo, message, timeout);
     }
 
     /**
@@ -105,10 +129,51 @@ public class RemoteActorRef implements CallableByActionName {
      * @return the receipt
      */
     public Receipt send(String actionName, String args) {
-        ActorMessage message = new ActorMessage(actorName, actionName, args);
+        return send(actionName, args, UUID.randomUUID().toString());
+    }
+
+    /**
+     * Sends with a {@code messageId} the caller chose. Sending again with the same id after a
+     * receipt that did not come is safe when the receiver drops duplicates: the action runs once.
+     *
+     * @param messageId the id of this message; use the same one for every try of the same message
+     */
+    public Receipt send(String actionName, String args, String messageId) {
+        ActorMessage message = new ActorMessage(actorName, actionName, args, messageId, null);
         logger.fine(String.format("RemoteActorRef.send → node=%s actor=%s action=%s",
                 nodeInfo.getAddress(), actorName, actionName));
         return transport.send(nodeInfo, message);
+    }
+
+    /**
+     * Sends, and sends again with the same {@code messageId} until a receipt comes or the tries
+     * run out. The caller states how many tries and how long to wait between them; there is no
+     * default, and the module never resends on its own.
+     *
+     * @param maxAttempts how many sends at most; at least 1
+     * @param delay       how long to wait between two sends; not negative
+     * @return the receipt of the last send: accepted, or not accepted when every try failed
+     */
+    public Receipt sendWithRetry(String actionName, String args, int maxAttempts, Duration delay) {
+        if (maxAttempts < 1) {
+            throw new IllegalArgumentException("maxAttempts must be at least 1: " + maxAttempts);
+        }
+        if (delay == null || delay.isNegative()) {
+            throw new IllegalArgumentException("delay must be given and not negative: " + delay);
+        }
+        String messageId = UUID.randomUUID().toString();
+        Receipt receipt = send(actionName, args, messageId);
+        for (int attempt = 2; attempt <= maxAttempts && !receipt.accepted(); attempt++) {
+            try {
+                Thread.sleep(delay.toMillis());
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return receipt;
+            }
+            logger.fine("RemoteActorRef.send again (" + attempt + "/" + maxAttempts + ") messageId=" + messageId);
+            receipt = send(actionName, args, messageId);
+        }
+        return receipt;
     }
 
     public String getActorName() {

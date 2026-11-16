@@ -59,6 +59,7 @@ public class DistributedIIActorSystem extends IIActorSystem implements AutoClose
     private final TransportLayer transport;
     private final NodeDiscovery discovery;
     private final NodeInfo myNode;
+    private final java.time.Duration callTimeout;
     private final Dispatcher dispatcher;
     private final ConcurrentHashMap<String, NodeInfo> remoteNodes = new ConcurrentHashMap<>();
     private final AtomicBoolean terminated = new AtomicBoolean(false);
@@ -69,6 +70,7 @@ public class DistributedIIActorSystem extends IIActorSystem implements AutoClose
         super(builder.discovery.getMyNodeId());
         this.transport = builder.transport;
         this.discovery = builder.discovery;
+        this.callTimeout = builder.callTimeout;
         this.myNode = new NodeInfo(discovery.getMyNodeId(), discovery.getMyHost(), discovery.getMyPort());
         Dispatcher allowList = new AllowListDispatcher(this, builder.allowedActions);
         this.dispatcher = builder.messageIds == null ? allowList
@@ -132,7 +134,7 @@ public class DistributedIIActorSystem extends IIActorSystem implements AutoClose
         if (node == null) {
             throw new IllegalArgumentException("Remote node not registered: " + nodeId);
         }
-        return new RemoteActorRef(actorName, node, transport);
+        return new RemoteActorRef(actorName, node, transport, callTimeout);
     }
 
     /**
@@ -141,7 +143,7 @@ public class DistributedIIActorSystem extends IIActorSystem implements AutoClose
      * @return a proxy that reaches the actor through the configured transport
      */
     public RemoteActorRef remoteActorOf(NodeInfo node, String actorName) {
-        return new RemoteActorRef(actorName, node, transport);
+        return new RemoteActorRef(actorName, node, transport, callTimeout);
     }
 
     /** Returns all nodes in the cluster (including this node). */
@@ -214,6 +216,7 @@ public class DistributedIIActorSystem extends IIActorSystem implements AutoClose
         private NodeDiscovery discovery;
         private Set<AllowListDispatcher.AllowedAction> allowedActions = Set.of();
         private MessageIdStore messageIds;
+        private java.time.Duration callTimeout = java.time.Duration.ofSeconds(30);
 
         /**
          * Sets the (actor, action) pairs that remote callers may invoke. Defaults to none:
@@ -233,6 +236,18 @@ public class DistributedIIActorSystem extends IIActorSystem implements AutoClose
          */
         public Builder deduplicateWith(MessageIdStore store) {
             this.messageIds = store;
+            return this;
+        }
+
+        /**
+         * How long a synchronous call to a remote actor waits for its result when the caller
+         * gives no wait of its own. Defaults to 30 seconds.
+         */
+        public Builder callTimeout(java.time.Duration timeout) {
+            if (timeout == null || timeout.isZero() || timeout.isNegative()) {
+                throw new IllegalArgumentException("callTimeout must be positive: " + timeout);
+            }
+            this.callTimeout = timeout;
             return this;
         }
 

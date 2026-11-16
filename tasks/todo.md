@@ -12,7 +12,7 @@ Decided: remote calls go through the target actor's mailbox; a `send` receipt me
 - [x] Step 5: `NodeDiscovery` from a configured peer list (`StaticNodeDiscovery`)
 - [x] Step 6: merge `DistributedIIActorSystem` onto the shared `Dispatcher` and the transports: remove its own HTTP server and its call path that skips the allow-list. Merge before the reliability layers, so that dedup and resend are written once, on the merged system
 - [x] Step 7: `messageId` dedup with a replaceable, persistent store (drops the second copy of a message; HTTP and Kafka alike)
-- [ ] Step 8: sender resend with the same `messageId`; `callByActionName(name, args, timeout)`
+- [x] Step 8: sender resend with the same `messageId`; `callByActionName(name, args, timeout)`
 
 Order decided by the person via the liaison, 2026-11-16: 5, 6 (merge), 7, 8. `Turing-workflow-editor` stays pinned
 to 1.0.0 and is not touched; compatibility with it is not kept (decided earlier by the person). The version number
@@ -38,3 +38,6 @@ constructors are gone; (2) `DistributedActorSystem.startHttpServer` serves nothi
 `Builder.allowedActions(...)` lists (actor, action) pairs, so every call is 403; (3) `TransportLayer.send`
 and `RemoteActorRef.send` return `Receipt` instead of `void`; (4) a refused `/invoke` is HTTP 403 (it was 200).
 Version bump to 1.1.0 is the person's decision (see CLAUDE.md: keep the three repos in sync).
+
+## After Step 8 (left for later, per the person)
+- [ ] One docs commit: stale `DistributedActorSystem` text in `reference/distributed.md`, the `NodeDiscovery*` javadoc examples, README, and the design doc's discrepancy list.

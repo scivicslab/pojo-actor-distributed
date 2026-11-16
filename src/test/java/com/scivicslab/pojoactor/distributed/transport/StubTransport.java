@@ -15,10 +15,17 @@ public class StubTransport implements TransportLayer {
     public final List<ActorMessage> sent = new ArrayList<>();
     public ActionResult presetResult = new ActionResult(true, "stub-result");
     public boolean accept = true;
+    /** The first n sends are refused; later ones follow {@link #accept}. */
+    public int refuseFirst = 0;
+    public java.time.Duration lastTimeout;
 
     @Override
     public Receipt send(NodeInfo target, ActorMessage message) {
         sent.add(message);
+        if (refuseFirst > 0) {
+            refuseFirst--;
+            return Receipt.refused(message.getMessageId(), "stub refused");
+        }
         return accept ? Receipt.accepted(message.getMessageId())
                 : Receipt.refused(message.getMessageId(), "stub refused");
     }
@@ -26,6 +33,7 @@ public class StubTransport implements TransportLayer {
     @Override
     public ActionResult sendAndWait(NodeInfo target, ActorMessage message, Duration timeout) {
         sent.add(message);
+        lastTimeout = timeout;
         return presetResult;
     }
 
