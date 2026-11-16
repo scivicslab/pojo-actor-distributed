@@ -15,27 +15,27 @@ import org.junit.jupiter.api.Test;
  * which shows up only as a connection that is refused.
  */
 @Tag("WorkflowTab_Port_260906_oo01")
-@DisplayName("DistributedActorSystem — deriving the publication port")
+@DisplayName("DistributedIIActorSystem — deriving the publication port")
 class PublicationPortTest {
 
     @Test
     void isTheApplicationsOwnHttpPortPlusOneThousand() {
-        assertEquals(29030, DistributedActorSystem.publicationPortFor(28030));
-        assertEquals(29011, DistributedActorSystem.publicationPortFor(28011));
+        assertEquals(29030, DistributedIIActorSystem.publicationPortFor(28030));
+        assertEquals(29011, DistributedIIActorSystem.publicationPortFor(28011));
     }
 
     /** Two instances of the same application differ in their HTTP port, so they differ here too. */
     @Test
     void twoInstancesNeverLandOnTheSamePort() {
-        assertEquals(1, DistributedActorSystem.publicationPortFor(28031)
-                - DistributedActorSystem.publicationPortFor(28030));
+        assertEquals(1, DistributedIIActorSystem.publicationPortFor(28031)
+                - DistributedIIActorSystem.publicationPortFor(28030));
     }
 
     /** A port that cannot exist must be refused here rather than at bind time. */
     @Test
     void refusesAnHttpPortThatWouldNotFit() {
-        assertThrows(IllegalArgumentException.class, () -> DistributedActorSystem.publicationPortFor(0));
-        assertThrows(IllegalArgumentException.class, () -> DistributedActorSystem.publicationPortFor(-1));
-        assertThrows(IllegalArgumentException.class, () -> DistributedActorSystem.publicationPortFor(65000));
+        assertThrows(IllegalArgumentException.class, () -> DistributedIIActorSystem.publicationPortFor(0));
+        assertThrows(IllegalArgumentException.class, () -> DistributedIIActorSystem.publicationPortFor(-1));
+        assertThrows(IllegalArgumentException.class, () -> DistributedIIActorSystem.publicationPortFor(65000));
     }
 }

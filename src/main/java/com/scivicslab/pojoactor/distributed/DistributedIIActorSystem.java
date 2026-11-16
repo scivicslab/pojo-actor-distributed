@@ -14,354 +14,228 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-
 package com.scivicslab.pojoactor.distributed;
 
-import com.scivicslab.pojoactor.action.ActionResult;
-import com.scivicslab.pojoactor.distributed.ActorMessage;
-import com.scivicslab.pojoactor.distributed.NodeInfo;
-import com.scivicslab.pojoactor.distributed.RemoteActorRef;
-import com.scivicslab.turingworkflow.workflow.IIActorRef;
+import com.scivicslab.pojoactor.distributed.discovery.NodeDiscovery;
+import com.scivicslab.pojoactor.distributed.discovery.NodeDiscoveryFactory;
+import com.scivicslab.pojoactor.distributed.transport.HttpTransport;
+import com.scivicslab.pojoactor.distributed.transport.TransportLayer;
 import com.scivicslab.turingworkflow.workflow.IIActorSystem;
-import com.sun.net.httpserver.HttpExchange;
-import com.sun.net.httpserver.HttpServer;
 
 import java.io.IOException;
-import java.io.InputStream;
-import java.io.OutputStream;
-import java.net.InetSocketAddress;
-import java.nio.charset.StandardCharsets;
+import java.util.List;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.logging.Level;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Logger;
 
 /**
- * Distributed actor system with HTTP-based inter-node communication.
+ * An {@link IIActorSystem} whose actors can call, and be called by, actors in other processes.
  *
- * <p>This class extends {@link IIActorSystem} to provide distributed actor
- * capabilities. Each instance runs an embedded HTTP server that accepts
- * actor invocation requests from remote nodes.</p>
+ * <p>This is the one distributed actor system. A workflow names a remote actor through
+ * {@link RemoteActorIIAR}; a call from outside arrives at an {@link HttpActorServer} or a
+ * {@link KafkaActorServer}, and both hand it to the same {@link Dispatcher}: only the
+ * (actor, action) pairs on the allow-list can be called, and a call runs through the target
+ * actor's mailbox.</p>
  *
- * <h2>Architecture</h2>
+ * <p>The system opens no port by itself. {@link #startHttpServer} and {@link #startServer} do,
+ * and until one is called nothing outside can reach it.</p>
+ *
  * <pre>{@code
- * Node 1 (host1:8081)                Node 2 (host2:8082)
- * ┌────────────────────────┐         ┌────────────────────────┐
- * │ DistributedIIActorSystem │         │ DistributedIIActorSystem │
- * │ ┌────────────────────┐ │         │ ┌────────────────────┐ │
- * │ │ HttpServer :8081   │ │         │ │ HttpServer :8082   │ │
- * │ └────────────────────┘ │         │ └────────────────────┘ │
- * │ Local Actors:          │◄────────│ HTTP POST              │
- * │ - math                 │         │ Local Actors:          │
- * │ - calculator           │         │ - logger               │
- * └────────────────────────┘         └────────────────────────┘
+ * DistributedIIActorSystem system = DistributedIIActorSystem.builder()
+ *     .discovery(new StaticNodeDiscovery(me, peers))
+ *     .allowedActions(Set.of(new AllowListDispatcher.AllowedAction("math", "add")))
+ *     .build();
+ * system.startHttpServer("127.0.0.1", port);
+ * system.addIIActor(mathActor);
  * }</pre>
  *
- * <h2>Usage Example</h2>
- *
- * <p><strong>Node 1 Program (ServerNode.java) - Deploy to host1:8081</strong></p>
- * <pre>{@code
- * public class ServerNode {
- *     public static void main(String[] args) throws IOException {
- *         // Create distributed actor system on this node
- *         DistributedIIActorSystem system =
- *             new DistributedIIActorSystem("node1", "0.0.0.0", 8081);
- *
- *         // Register math actor on this node
- *         MathPlugin math = new MathPlugin();
- *         MathIIAR mathActor = new MathIIAR("math", math, system);
- *         system.addIIActor(mathActor);
- *
- *         System.out.println("Server node ready on port 8081");
- *         // Keep running to accept requests
- *         Thread.currentThread().join();
- *     }
- * }
- * }</pre>
- *
- * <p><strong>Node 2 Program (ClientNode.java) - Deploy to host2:8082</strong></p>
- * <pre>{@code
- * public class ClientNode {
- *     public static void main(String[] args) throws IOException {
- *         // Create distributed actor system on this node
- *         DistributedIIActorSystem system =
- *             new DistributedIIActorSystem("node2", "0.0.0.0", 8082);
- *
- *         // Register remote node1 (must know its address)
- *         system.registerRemoteNode("node1", "host1.example.com", 8081);
- *
- *         // Get remote actor reference
- *         RemoteActorRef remoteMath = system.getRemoteActor("node1", "math");
- *
- *         // Call remote actor
- *         ActionResult result = remoteMath.callByActionName("add", "5,3");
- *         System.out.println("Result: " + result.getResult());
- *     }
- * }
- * }</pre>
- *
- * @author devteam@scivicslab.com
  * @since 1.0.0
  */
-public class DistributedIIActorSystem extends IIActorSystem {
+public class DistributedIIActorSystem extends IIActorSystem implements AutoCloseable {
 
     private static final Logger logger = Logger.getLogger(DistributedIIActorSystem.class.getName());
 
-    private final String nodeId;
-    private final String host;
-    private final int port;
-    private final HttpServer httpServer;
-    private final ConcurrentHashMap<String, NodeInfo> remoteNodes;
+    private final TransportLayer transport;
+    private final NodeDiscovery discovery;
+    private final NodeInfo myNode;
+    private final Dispatcher dispatcher;
+    private final ConcurrentHashMap<String, NodeInfo> remoteNodes = new ConcurrentHashMap<>();
+    private final AtomicBoolean terminated = new AtomicBoolean(false);
+    private HttpActorServer httpServer;
+    private KafkaActorServer kafkaServer;
 
-    /**
-     * Constructs a new DistributedIIActorSystem.
-     *
-     * @param nodeId unique identifier for this node
-     * @param host hostname or IP address for this node
-     * @param port HTTP port number to listen on
-     * @throws IOException if HTTP server cannot be created
-     */
-    public DistributedIIActorSystem(String nodeId, String host, int port) throws IOException {
-        super(nodeId);
-        this.nodeId = nodeId;
-        this.host = host;
-        this.port = port;
-        this.remoteNodes = new ConcurrentHashMap<>();
-
-        // Create and configure HTTP server
-        this.httpServer = HttpServer.create(new InetSocketAddress(host, port), 0);
-        setupEndpoints();
-        this.httpServer.setExecutor(null); // Use default executor
-        this.httpServer.start();
-
-        logger.info(String.format("DistributedIIActorSystem '%s' started on %s:%d",
-                nodeId, host, port));
-    }
-
-    /**
-     * Constructs a new DistributedIIActorSystem listening on all interfaces.
-     *
-     * @param nodeId unique identifier for this node
-     * @param port HTTP port number to listen on
-     * @throws IOException if HTTP server cannot be created
-     */
-    public DistributedIIActorSystem(String nodeId, int port) throws IOException {
-        this(nodeId, "0.0.0.0", port);
-    }
-
-    /**
-     * Sets up HTTP endpoints for actor invocation.
-     */
-    private void setupEndpoints() {
-        httpServer.createContext("/actor", this::handleActorInvocation);
-        httpServer.createContext("/health", this::handleHealthCheck);
-    }
-
-    /**
-     * Handles HTTP requests for actor invocation.
-     *
-     * <p>Expected request format:</p>
-     * <pre>{@code
-     * POST /actor/math/invoke
-     * Content-Type: application/json
-     *
-     * {
-     *   "actionName": "add",
-     *   "args": "5,3",
-     *   "messageId": "uuid-xxx"
-     * }
-     * }</pre>
-     *
-     * @param exchange the HTTP exchange
-     */
-    private void handleActorInvocation(HttpExchange exchange) {
-        try {
-            if (!"POST".equals(exchange.getRequestMethod())) {
-                sendResponse(exchange, 405, "{\"error\":\"Method not allowed\"}");
-                return;
-            }
-
-            String path = exchange.getRequestURI().getPath();
-            String[] parts = path.split("/");
-
-            // Expected: /actor/{actorName}/invoke
-            if (parts.length != 4 || !"invoke".equals(parts[3])) {
-                sendResponse(exchange, 400, "{\"error\":\"Invalid path format\"}");
-                return;
-            }
-
-            String actorName = parts[2];
-
-            // Read request body
-            String requestBody = readRequestBody(exchange);
-            ActorMessage message = ActorMessage.fromJson(requestBody);
-
-            // Get local actor
-            IIActorRef<?> actor = getIIActor(actorName);
-            if (actor == null) {
-                String errorJson = String.format(
-                    "{\"success\":false,\"result\":\"Actor '%s' not found on node '%s'\",\"messageId\":\"%s\"}",
-                    actorName, nodeId, message.getMessageId());
-                sendResponse(exchange, 404, errorJson);
-                return;
-            }
-
-            // Invoke actor action
-            ActionResult result = actor.callByActionName(
-                message.getActionName(),
-                message.getArgs()
-            );
-
-            // Build response
-            String responseJson = String.format(
-                "{\"success\":%b,\"result\":\"%s\",\"messageId\":\"%s\"}",
-                result.isSuccess(),
-                escapeJson(result.getResult()),
-                message.getMessageId()
-            );
-
-            sendResponse(exchange, 200, responseJson);
-
-        } catch (Exception e) {
-            logger.log(Level.SEVERE, "Error handling actor invocation", e);
-            try {
-                String errorJson = String.format(
-                    "{\"success\":false,\"result\":\"Internal error: %s\"}",
-                    escapeJson(e.getMessage())
-                );
-                sendResponse(exchange, 500, errorJson);
-            } catch (IOException ioException) {
-                logger.log(Level.SEVERE, "Error sending error response", ioException);
+    private DistributedIIActorSystem(Builder builder) {
+        super(builder.discovery.getMyNodeId());
+        this.transport = builder.transport;
+        this.discovery = builder.discovery;
+        this.myNode = new NodeInfo(discovery.getMyNodeId(), discovery.getMyHost(), discovery.getMyPort());
+        this.dispatcher = new AllowListDispatcher(this, builder.allowedActions);
+        for (NodeInfo node : discovery.getAllNodes()) {
+            if (!node.getNodeId().equals(myNode.getNodeId())) {
+                remoteNodes.put(node.getNodeId(), node);
             }
         }
     }
 
     /**
-     * Handles health check requests.
+     * Starts an {@link HttpActorServer} on every interface. Whatever the allow-list names becomes
+     * callable by anything that can reach the port; see {@link #startHttpServer(String, int)}.
      *
-     * @param exchange the HTTP exchange
+     * @param port the port to listen on (should match {@code getMyNode().getPort()})
+     * @throws IOException if the port cannot be bound
      */
-    private void handleHealthCheck(HttpExchange exchange) {
-        try {
-            String response = String.format(
-                "{\"nodeId\":\"%s\",\"status\":\"healthy\",\"actors\":%d}",
-                nodeId, getIIActorCount()
-            );
-            sendResponse(exchange, 200, response);
-        } catch (IOException e) {
-            logger.log(Level.SEVERE, "Error handling health check", e);
-        }
+    public synchronized void startHttpServer(int port) throws IOException {
+        startHttpServer(null, port);
     }
 
     /**
-     * Reads the HTTP request body as a string.
+     * Starts an {@link HttpActorServer} on one address.
      *
-     * @param exchange the HTTP exchange
-     * @return the request body
-     * @throws IOException if reading fails
+     * <p>Pass {@code "127.0.0.1"} when the callers are on this machine, and leave it open only
+     * when they are other hosts. What may be called is decided by the allow-list alone.</p>
+     *
+     * @param bindAddress the address to listen on; {@code null} listens on every interface
+     * @param port        the port to listen on (should match {@code getMyNode().getPort()})
+     * @throws IOException if the address and port cannot be bound
      */
-    private String readRequestBody(HttpExchange exchange) throws IOException {
-        try (InputStream is = exchange.getRequestBody()) {
-            return new String(is.readAllBytes(), StandardCharsets.UTF_8);
-        }
+    public synchronized void startHttpServer(String bindAddress, int port) throws IOException {
+        httpServer = new HttpActorServer(dispatcher, bindAddress, port);
+        httpServer.start();
     }
 
     /**
-     * Sends an HTTP response.
+     * Starts a {@link KafkaActorServer} that reads this node's inbox.
      *
-     * @param exchange the HTTP exchange
-     * @param statusCode the HTTP status code
-     * @param response the response body
-     * @throws IOException if writing fails
+     * @param brokers Kafka bootstrap servers
      */
-    private void sendResponse(HttpExchange exchange, int statusCode, String response)
-            throws IOException {
-        byte[] bytes = response.getBytes(StandardCharsets.UTF_8);
-        exchange.getResponseHeaders().set("Content-Type", "application/json");
-        exchange.sendResponseHeaders(statusCode, bytes.length);
-        try (OutputStream os = exchange.getResponseBody()) {
-            os.write(bytes);
-        }
+    public synchronized void startServer(String brokers) {
+        kafkaServer = new KafkaActorServer(dispatcher, myNode, brokers);
+        kafkaServer.start();
     }
 
-    /**
-     * Escapes special characters for JSON strings.
-     *
-     * @param str the string to escape
-     * @return the escaped string
-     */
-    private String escapeJson(String str) {
-        if (str == null) return "";
-        return str.replace("\\", "\\\\")
-                  .replace("\"", "\\\"")
-                  .replace("\n", "\\n")
-                  .replace("\r", "\\r")
-                  .replace("\t", "\\t");
-    }
-
-    /**
-     * Registers a remote node in the node registry.
-     *
-     * @param nodeId the remote node's identifier
-     * @param host the remote node's hostname or IP
-     * @param port the remote node's HTTP port
-     */
+    /** Registers a node that this system can call. */
     public void registerRemoteNode(String nodeId, String host, int port) {
-        NodeInfo nodeInfo = new NodeInfo(nodeId, host, port);
-        remoteNodes.put(nodeId, nodeInfo);
-        logger.info(String.format("Registered remote node: %s at %s:%d",
-                nodeId, host, port));
+        remoteNodes.put(nodeId, new NodeInfo(nodeId, host, port));
+        logger.info("Registered remote node: " + nodeId + " at " + host + ":" + port);
     }
 
     /**
-     * Gets a remote actor reference.
+     * Returns a reference to an actor on a registered node.
      *
-     * @param nodeId the node hosting the actor
-     * @param actorName the name of the actor
-     * @return a RemoteActorRef for the specified actor
      * @throws IllegalArgumentException if the node is not registered
      */
     public RemoteActorRef getRemoteActor(String nodeId, String actorName) {
-        NodeInfo nodeInfo = remoteNodes.get(nodeId);
-        if (nodeInfo == null) {
+        NodeInfo node = remoteNodes.get(nodeId);
+        if (node == null) {
             throw new IllegalArgumentException("Remote node not registered: " + nodeId);
         }
-        return new RemoteActorRef(actorName, nodeInfo);
+        return new RemoteActorRef(actorName, node, transport);
     }
 
     /**
-     * Returns the node identifier for this system.
+     * Returns a {@link RemoteActorRef} for an actor on the given node.
      *
-     * @return the node ID
+     * @return a proxy that reaches the actor through the configured transport
      */
-    public String getNodeId() {
-        return nodeId;
+    public RemoteActorRef remoteActorOf(NodeInfo node, String actorName) {
+        return new RemoteActorRef(actorName, node, transport);
+    }
+
+    /** Returns all nodes in the cluster (including this node). */
+    public List<NodeInfo> getNodes() {
+        return discovery.getAllNodes();
+    }
+
+    /** Returns this node's identity. */
+    public NodeInfo getMyNode() {
+        return myNode;
+    }
+
+    /** Stops the servers and the transport, then terminates the actors. Safe to call twice. */
+    @Override
+    public void terminate() {
+        if (!terminated.compareAndSet(false, true)) {
+            return;
+        }
+        logger.info("Terminating DistributedIIActorSystem '" + myNode.getNodeId() + "'");
+        synchronized (this) {
+            if (kafkaServer != null) kafkaServer.close();
+            if (httpServer != null) httpServer.close();
+        }
+        transport.close();
+        super.terminate();
+    }
+
+    @Override
+    public void close() {
+        terminate();
     }
 
     /**
-     * Returns the hostname for this system.
+     * How far above an application's own HTTP port its actors are published.
      *
-     * @return the host
+     * <p>1000 puts the publication ports in a band of their own: an application on 28030 publishes
+     * on 29030, and no application's publication port can collide with another's HTTP port as long
+     * as the HTTP ports stay within a thousand of each other.
      */
-    public String getHost() {
-        return host;
-    }
+    public static final int PUBLICATION_PORT_OFFSET = 1000;
 
     /**
-     * Returns the HTTP port for this system.
+     * The port an application publishes its actors on, given the port it serves HTTP on.
      *
-     * @return the port
+     * <p>This is the one definition of that number. The application that publishes and the process
+     * that calls in both use it, so neither has to be configured with the other's port: they agree
+     * on the one port a person can already see, and derive the rest.
+     *
+     * @param httpPort the port the application serves HTTP on
+     * @return the port to publish actors on
+     * @throws IllegalArgumentException if the result would not be a usable port
      */
-    public int getPort() {
+    public static int publicationPortFor(int httpPort) {
+        int port = httpPort + PUBLICATION_PORT_OFFSET;
+        if (httpPort <= 0 || port > 65535) {
+            throw new IllegalArgumentException(
+                    "Cannot publish actors for an application on HTTP port " + httpPort
+                    + ": " + httpPort + " + " + PUBLICATION_PORT_OFFSET + " is not a usable port");
+        }
         return port;
     }
 
-    /**
-     * Terminates this actor system and stops the HTTP server.
-     */
-    @Override
-    public void terminate() {
-        logger.info(String.format("Terminating DistributedIIActorSystem '%s'", nodeId));
-        httpServer.stop(0);
-        super.terminate();
+    public static Builder builder() {
+        return new Builder();
+    }
+
+    public static class Builder {
+
+        private TransportLayer transport = new HttpTransport();
+        private NodeDiscovery discovery;
+        private Set<AllowListDispatcher.AllowedAction> allowedActions = Set.of();
+
+        /**
+         * Sets the (actor, action) pairs that remote callers may invoke. Defaults to none:
+         * nothing can be called from outside until it is listed here.
+         */
+        public Builder allowedActions(Set<AllowListDispatcher.AllowedAction> allowed) {
+            this.allowedActions = Set.copyOf(allowed);
+            return this;
+        }
+
+        /** Sets the transport layer. Defaults to {@link HttpTransport}. */
+        public Builder transport(TransportLayer transport) {
+            this.transport = transport;
+            return this;
+        }
+
+        /** Sets how this system finds its own identity and its peers. Defaults to auto-detection. */
+        public Builder discovery(NodeDiscovery discovery) {
+            this.discovery = discovery;
+            return this;
+        }
+
+        public DistributedIIActorSystem build() {
+            if (discovery == null) discovery = NodeDiscoveryFactory.autoDetect();
+            return new DistributedIIActorSystem(this);
+        }
     }
 }

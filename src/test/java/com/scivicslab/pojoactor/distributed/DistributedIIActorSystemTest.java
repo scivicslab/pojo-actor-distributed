@@ -1,7 +1,6 @@
 package com.scivicslab.pojoactor.distributed;
 
 import com.scivicslab.pojoactor.action.ActionResult;
-import com.scivicslab.pojoactor.core.ActorSystem;
 import com.scivicslab.pojoactor.distributed.discovery.NodeDiscovery;
 import com.scivicslab.pojoactor.distributed.transport.StubTransport;
 import org.junit.jupiter.api.Tag;
@@ -12,11 +11,11 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * Unit tests for DistributedActorSystem builder and RemoteActorRef wiring.
+ * Unit tests for DistributedIIActorSystem builder and RemoteActorRef wiring.
  * Uses stub transport and discovery — no Kafka or network required.
  */
 @Tag("S_load.03")
-class DistributedActorSystemTest {
+class DistributedIIActorSystemTest {
 
     /** Stub NodeDiscovery that returns two fixed nodes. */
     static class StubDiscovery implements NodeDiscovery {
@@ -43,8 +42,7 @@ class DistributedActorSystemTest {
         StubTransport stub = new StubTransport();
         stub.presetResult = new ActionResult(true, "pong");
 
-        DistributedActorSystem system = DistributedActorSystem.builder()
-                .localActorSystem(new ActorSystem("test"))
+        DistributedIIActorSystem system = DistributedIIActorSystem.builder()
                 .transport(stub)
                 .discovery(new StubDiscovery(nodeA, nodeB))
                 .build();
@@ -63,8 +61,7 @@ class DistributedActorSystemTest {
 
     @Test
     void builder_shouldExposeDiscoveredNodes() {
-        DistributedActorSystem system = DistributedActorSystem.builder()
-                .localActorSystem(new ActorSystem("test"))
+        DistributedIIActorSystem system = DistributedIIActorSystem.builder()
                 .transport(new StubTransport())
                 .discovery(new StubDiscovery(nodeA, nodeB))
                 .build();
@@ -78,18 +75,35 @@ class DistributedActorSystemTest {
     }
 
     @Test
-    void builder_shouldRejectMissingActorSystem() {
-        assertThrows(IllegalStateException.class, () ->
-                DistributedActorSystem.builder()
-                        .transport(new StubTransport())
-                        .discovery(new StubDiscovery(nodeA, nodeB))
-                        .build());
+    void mergedSystemIsAnIIActorSystem() {
+        DistributedIIActorSystem system = DistributedIIActorSystem.builder()
+                .transport(new StubTransport())
+                .discovery(new StubDiscovery(nodeA, nodeB))
+                .build();
+
+        assertInstanceOf(com.scivicslab.turingworkflow.workflow.IIActorSystem.class, system);
+        assertEquals("node-a", system.getMyNode().getNodeId());
+
+        system.close();
+    }
+
+    @Test
+    void peersFromDiscoveryAreRegisteredWithoutMe() {
+        DistributedIIActorSystem system = DistributedIIActorSystem.builder()
+                .transport(new StubTransport())
+                .discovery(new StubDiscovery(nodeA, nodeB))
+                .build();
+
+        RemoteActorRef ref = system.getRemoteActor("node-b", "x");
+        assertEquals("node-b", ref.getNodeInfo().getNodeId());
+        assertThrows(IllegalArgumentException.class, () -> system.getRemoteActor("node-a", "x"));
+
+        system.close();
     }
 
     @Test
     void myNode_shouldMatchDiscovery() {
-        DistributedActorSystem system = DistributedActorSystem.builder()
-                .localActorSystem(new ActorSystem("test"))
+        DistributedIIActorSystem system = DistributedIIActorSystem.builder()
                 .transport(new StubTransport())
                 .discovery(new StubDiscovery(nodeA, nodeB))
                 .build();

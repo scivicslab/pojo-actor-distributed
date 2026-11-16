@@ -118,10 +118,8 @@ class HttpActorServerBindAddressTest {
         InetAddress lan = nonLoopbackAddress();
         Assumptions.assumeTrue(lan != null, "no non-loopback IPv4 address on this machine");
 
-        ActorSystem local = new ActorSystem("bind-through");
         int port = freePort();
-        DistributedActorSystem system = DistributedActorSystem.builder()
-                .localActorSystem(local)
+        DistributedIIActorSystem system = DistributedIIActorSystem.builder()
                 .discovery(new OneNodeDiscovery(port))
                 .build();
         try {
@@ -132,7 +130,6 @@ class HttpActorServerBindAddressTest {
                     "must not be reachable on " + lan.getHostAddress());
         } finally {
             system.close();
-            local.terminate();
         }
     }
 

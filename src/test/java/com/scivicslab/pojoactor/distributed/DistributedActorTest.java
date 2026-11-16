@@ -19,158 +19,173 @@ package com.scivicslab.pojoactor.distributed;
 
 import com.scivicslab.pojoactor.action.Action;
 import com.scivicslab.pojoactor.action.ActionResult;
+import com.scivicslab.pojoactor.distributed.discovery.StaticNodeDiscovery;
 import com.scivicslab.turingworkflow.workflow.IIActorRef;
-import com.scivicslab.pojoactor.distributed.DistributedIIActorSystem;
-import com.scivicslab.pojoactor.distributed.RemoteActorRef;
+import com.scivicslab.turingworkflow.workflow.IIActorSystem;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.net.ServerSocket;
+import java.util.List;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+/**
+ * Two merged systems talking over real HTTP on loopback. Everything one system calls on the
+ * other goes through the other's allow-list and the target actor's mailbox.
+ */
 @Tag("Y_dist")
 @Tag("J_dist")
 class DistributedActorTest {
 
     private DistributedIIActorSystem system1;
     private DistributedIIActorSystem system2;
+    private int port1;
+    private int port2;
+
+    private static int freePort() throws IOException {
+        try (ServerSocket s = new ServerSocket(0)) {
+            return s.getLocalPort();
+        }
+    }
+
+    private static Set<AllowListDispatcher.AllowedAction> mathActions(String actor) {
+        return Set.of(
+                new AllowListDispatcher.AllowedAction(actor, "add"),
+                new AllowListDispatcher.AllowedAction(actor, "multiply"));
+    }
 
     @BeforeEach
     void setUp() throws IOException {
-        // Create two actor systems on different ports
-        system1 = new DistributedIIActorSystem("node1", "localhost", 9081);
-        system2 = new DistributedIIActorSystem("node2", "localhost", 9082);
+        port1 = freePort();
+        port2 = freePort();
+        NodeInfo n1 = new NodeInfo("node1", "127.0.0.1", port1);
+        NodeInfo n2 = new NodeInfo("node2", "127.0.0.1", port2);
+        system1 = DistributedIIActorSystem.builder()
+                .discovery(new StaticNodeDiscovery(n1, List.of(n2)))
+                .allowedActions(mathActions("math"))
+                .build();
+        system2 = DistributedIIActorSystem.builder()
+                .discovery(new StaticNodeDiscovery(n2, List.of(n1)))
+                .allowedActions(mathActions("math"))
+                .build();
+        system1.startHttpServer("127.0.0.1", port1);
+        system2.startHttpServer("127.0.0.1", port2);
     }
 
     @AfterEach
     void tearDown() {
-        if (system1 != null) {
-            system1.terminate();
-        }
-        if (system2 != null) {
-            system2.terminate();
-        }
+        if (system1 != null) system1.terminate();
+        if (system2 != null) system2.terminate();
     }
 
     @Test
-    void testRemoteActorInvocation() throws Exception {
-        // Register math actor on node1
-        MathPlugin math = new MathPlugin();
-        TestMathIIAR mathActor = new TestMathIIAR("math", math, system1);
-        system1.addIIActor(mathActor);
+    void testRemoteActorInvocation() {
+        system1.addIIActor(new TestMathIIAR("math", new MathPlugin(), system1));
 
-        // Register node1 as remote node in node2
-        system2.registerRemoteNode("node1", "localhost", 9081);
+        ActionResult result = system2.getRemoteActor("node1", "math").callByActionName("add", "5,3");
 
-        // Get remote actor reference
-        RemoteActorRef remoteMath = system2.getRemoteActor("node1", "math");
-
-        // Invoke remote actor
-        ActionResult result = remoteMath.callByActionName("add", "5,3");
-
-        assertTrue(result.isSuccess());
+        assertTrue(result.isSuccess(), result.getResult());
         assertEquals("8", result.getResult());
     }
 
+    /** The old path called any action of any registered actor. Now only the listed pairs. */
     @Test
-    void testRemoteActorNotFound() throws Exception {
-        // Register node1 in node2 without any actors
-        system2.registerRemoteNode("node1", "localhost", 9081);
+    void anActionNotOnTheAllowListIsRefused() {
+        system1.addIIActor(new TestMathIIAR("math", new MathPlugin(), system1));
 
-        // Try to call non-existent actor
-        RemoteActorRef remoteActor = system2.getRemoteActor("node1", "nonexistent");
-        ActionResult result = remoteActor.callByActionName("someAction", "args");
+        ActionResult result = system2.getRemoteActor("node1", "math").callByActionName("greet", "x");
 
         assertFalse(result.isSuccess());
-        assertTrue(result.getResult().contains("not found"));
+        assertTrue(result.getResult().contains("Not allowed"), result.getResult());
     }
 
     @Test
-    void testMultipleRemoteActors() throws Exception {
-        // Register two actors on node1
-        MathPlugin math = new MathPlugin();
-        TestMathIIAR mathActor = new TestMathIIAR("math", math, system1);
-        system1.addIIActor(mathActor);
+    void anActorNotOnTheAllowListIsRefusedLikeAnUnknownOne() {
+        system1.addIIActor(new TestMathIIAR("secret", new MathPlugin(), system1));
 
-        MathPlugin calculator = new MathPlugin();
-        TestMathIIAR calcActor = new TestMathIIAR("calculator", calculator, system1);
-        system1.addIIActor(calcActor);
+        ActionResult existing = system2.getRemoteActor("node1", "secret").callByActionName("add", "1,2");
+        ActionResult missing = system2.getRemoteActor("node1", "nonexistent").callByActionName("add", "1,2");
 
-        // Register node1 in node2
-        system2.registerRemoteNode("node1", "localhost", 9081);
-
-        // Call both actors from node2
-        RemoteActorRef remoteMath = system2.getRemoteActor("node1", "math");
-        RemoteActorRef remoteCalc = system2.getRemoteActor("node1", "calculator");
-
-        ActionResult result1 = remoteMath.callByActionName("add", "10,20");
-        ActionResult result2 = remoteCalc.callByActionName("multiply", "3,4");
-
-        assertTrue(result1.isSuccess());
-        assertEquals("30", result1.getResult());
-
-        assertTrue(result2.isSuccess());
-        assertEquals("12", result2.getResult());
+        assertFalse(existing.isSuccess());
+        assertFalse(missing.isSuccess());
+        assertTrue(existing.getResult().startsWith("Not allowed"));
+        assertTrue(missing.getResult().startsWith("Not allowed"));
     }
 
     @Test
-    void testBidirectionalCommunication() throws Exception {
-        // Register actors on both nodes
-        MathPlugin math1 = new MathPlugin();
-        TestMathIIAR mathActor1 = new TestMathIIAR("math", math1, system1);
-        system1.addIIActor(mathActor1);
+    void testMultipleRemoteActors() {
+        system1.terminate();
+        system1 = null;
+        // A second system with two listed actors.
+        try {
+            int p = freePort();
+            NodeInfo n1 = new NodeInfo("node1", "127.0.0.1", p);
+            system1 = DistributedIIActorSystem.builder()
+                    .discovery(new StaticNodeDiscovery(n1, List.of()))
+                    .allowedActions(Set.of(
+                            new AllowListDispatcher.AllowedAction("math", "add"),
+                            new AllowListDispatcher.AllowedAction("calculator", "multiply")))
+                    .build();
+            system1.startHttpServer("127.0.0.1", p);
+            system1.addIIActor(new TestMathIIAR("math", new MathPlugin(), system1));
+            system1.addIIActor(new TestMathIIAR("calculator", new MathPlugin(), system1));
+            system2.registerRemoteNode("node1", "127.0.0.1", p);
 
-        MathPlugin math2 = new MathPlugin();
-        TestMathIIAR mathActor2 = new TestMathIIAR("math", math2, system2);
-        system2.addIIActor(mathActor2);
+            ActionResult r1 = system2.getRemoteActor("node1", "math").callByActionName("add", "10,20");
+            ActionResult r2 = system2.getRemoteActor("node1", "calculator").callByActionName("multiply", "3,4");
 
-        // Register each node as remote in the other
-        system1.registerRemoteNode("node2", "localhost", 9082);
-        system2.registerRemoteNode("node1", "localhost", 9081);
+            assertEquals("30", r1.getResult());
+            assertEquals("12", r2.getResult());
+        } catch (IOException e) {
+            fail(e);
+        }
+    }
 
-        // Call from node1 to node2
-        RemoteActorRef remote2 = system1.getRemoteActor("node2", "math");
-        ActionResult result1 = remote2.callByActionName("add", "100,200");
+    @Test
+    void testBidirectionalCommunication() {
+        system1.addIIActor(new TestMathIIAR("math", new MathPlugin(), system1));
+        system2.addIIActor(new TestMathIIAR("math", new MathPlugin(), system2));
 
-        // Call from node2 to node1
-        RemoteActorRef remote1 = system2.getRemoteActor("node1", "math");
-        ActionResult result2 = remote1.callByActionName("multiply", "5,6");
+        ActionResult result1 = system1.getRemoteActor("node2", "math").callByActionName("add", "100,200");
+        ActionResult result2 = system2.getRemoteActor("node1", "math").callByActionName("multiply", "5,6");
 
-        assertTrue(result1.isSuccess());
         assertEquals("300", result1.getResult());
-
-        assertTrue(result2.isSuccess());
         assertEquals("30", result2.getResult());
     }
 
     @Test
-    void testHealthCheck() throws Exception {
-        // Health check should work even without actors
-        java.net.http.HttpClient client = java.net.http.HttpClient.newHttpClient();
-        java.net.http.HttpRequest request = java.net.http.HttpRequest.newBuilder()
-                .uri(java.net.URI.create("http://localhost:9081/health"))
-                .GET()
-                .build();
+    void sendGivesAReceiptWhenTheRemoteMailboxHasTheCall() {
+        system1.addIIActor(new TestMathIIAR("math", new MathPlugin(), system1));
 
-        java.net.http.HttpResponse<String> response = client.send(
-                request,
-                java.net.http.HttpResponse.BodyHandlers.ofString()
-        );
+        Receipt receipt = system2.getRemoteActor("node1", "math").send("add", "1,2");
 
-        assertEquals(200, response.statusCode());
-        assertTrue(response.body().contains("healthy"));
-        assertTrue(response.body().contains("node1"));
+        assertTrue(receipt.accepted(), receipt.detail());
     }
 
-    /**
-     * Test implementation of IIActorRef for MathPlugin.
-     */
+    @Test
+    void thereIsNoServerOfItsOwnBeforeOneIsStarted() throws IOException {
+        int p = freePort();
+        DistributedIIActorSystem idle = DistributedIIActorSystem.builder()
+                .discovery(new StaticNodeDiscovery(new NodeInfo("idle", "127.0.0.1", p), List.of()))
+                .build();
+        try {
+            assertThrows(IOException.class, () -> {
+                try (java.net.Socket s = new java.net.Socket("127.0.0.1", p)) { }
+            });
+        } finally {
+            idle.terminate();
+        }
+    }
+
+    /** Test implementation of IIActorRef for MathPlugin. */
     private static class TestMathIIAR extends IIActorRef<MathPlugin> {
 
-        public TestMathIIAR(String actorName, MathPlugin object, DistributedIIActorSystem system) {
+        public TestMathIIAR(String actorName, MathPlugin object, IIActorSystem system) {
             super(actorName, object, system);
         }
 
