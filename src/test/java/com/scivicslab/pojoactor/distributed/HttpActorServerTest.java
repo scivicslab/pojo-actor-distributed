@@ -275,4 +275,42 @@ class HttpActorServerTest {
         assertEquals("project1/chat-01", HttpActorServer.extractActorName("/actor/project1/chat-01/send", "/send"));
         assertNull(HttpActorServer.extractActorName("/actor/math/invoke", "/send"));
     }
+
+    // ---- /health ----
+
+    private static HttpResponse<String> get(int port, String path) throws Exception {
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create("http://127.0.0.1:" + port + path)).GET().build();
+        return HttpClient.newHttpClient().send(request, HttpResponse.BodyHandlers.ofString());
+    }
+
+    /** A readiness probe or a peer asks "is it up": 200, no body, no allow-list entry. */
+    @Test
+    void health_answers200WithNoBodyAndNeedsNoAllowListEntry() throws Exception {
+        int port = 18187;
+        ActorSystem system = new ActorSystem("test");
+        try (HttpActorServer server = new HttpActorServer(
+                new AllowListDispatcher(system, Set.of()), "127.0.0.1", port)) {
+            server.start();
+            HttpResponse<String> r = get(port, "/health");
+            assertEquals(200, r.statusCode());
+            assertEquals("", r.body());
+        } finally {
+            system.terminate();
+        }
+    }
+
+    @Test
+    void health_acceptsOnlyGet() throws Exception {
+        int port = 18188;
+        ActorSystem system = new ActorSystem("test");
+        try (HttpActorServer server = new HttpActorServer(
+                new AllowListDispatcher(system, Set.of()), "127.0.0.1", port)) {
+            server.start();
+            HttpResponse<String> r = post(port, "/health", new ActorMessage("a", "b", ""));
+            assertEquals(405, r.statusCode());
+        } finally {
+            system.terminate();
+        }
+    }
 }

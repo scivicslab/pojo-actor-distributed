@@ -41,6 +41,8 @@ import java.util.logging.Logger;
  *
  * <h2>Endpoints</h2>
  * <pre>
+ * GET  /health                      200, no body: the server is up (needs no allow-list entry)
+ *
  * POST /actor/{actorName}/invoke   runs the action and answers with its result
  *   200 {"success":true,"result":"8"}      the action ran (success says whether it worked)
  *   403 {"success":false,"result":"..."}   refused: not allowed
@@ -120,6 +122,7 @@ public class HttpActorServer implements AutoCloseable {
                 : new InetSocketAddress(bindAddress, port);
         httpServer = HttpServer.create(address, 0);
         httpServer.createContext(CONTEXT_PREFIX, this::handleRequest);
+        httpServer.createContext("/health", this::handleHealth);
         httpServer.setExecutor(Executors.newVirtualThreadPerTaskExecutor());
         httpServer.start();
         logger.info("HttpActorServer started on " + address.getAddress().getHostAddress() + ":" + port);
@@ -130,6 +133,17 @@ public class HttpActorServer implements AutoCloseable {
         if (httpServer != null) {
             httpServer.stop(1);
             logger.info("HttpActorServer stopped on port " + port);
+        }
+    }
+
+    // Readiness: 200 with no body. It names no actor, so it needs no allow-list entry.
+    private void handleHealth(HttpExchange exchange) throws IOException {
+        try (exchange) {
+            if (!"GET".equalsIgnoreCase(exchange.getRequestMethod())) {
+                exchange.sendResponseHeaders(405, -1);
+                return;
+            }
+            exchange.sendResponseHeaders(200, -1);
         }
     }
 
