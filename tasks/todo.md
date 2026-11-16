@@ -9,9 +9,14 @@ Decided: remote calls go through the target actor's mailbox; a `send` receipt me
 - [x] Step 2: `HttpActorServer` uses the `Dispatcher`
 - [x] Step 3: `RemoteActorRef.send` returns a receipt
 - [x] Step 4: Kafka path (`KafkaActorServer` uses the `Dispatcher`, explicit success field, acks=all, manual commit after mailbox accept)
-- [ ] Step 5: peer list `NodeDiscovery` (configured node list)
-- [ ] Step 6: `messageId` dedup store (replaceable, survives restart)
-- [ ] Step 7: sender resend with the same `messageId`; `callByActionName(name, args, timeout)`
+- [ ] Step 5: `NodeDiscovery` from a configured peer list (`StaticNodeDiscovery`)
+- [ ] Step 6: merge `DistributedIIActorSystem` onto the shared `Dispatcher` and the transports: remove its own HTTP server and its call path that skips the allow-list. Merge before the reliability layers, so that dedup and resend are written once, on the merged system
+- [ ] Step 7: `messageId` dedup with a replaceable, persistent store (drops the second copy of a message; HTTP and Kafka alike)
+- [ ] Step 8: sender resend with the same `messageId`; `callByActionName(name, args, timeout)`
+
+Order decided by the person via the liaison, 2026-11-16: 5, 6 (merge), 7, 8. `Turing-workflow-editor` stays pinned
+to 1.0.0 and is not touched; compatibility with it is not kept (decided earlier by the person). The version number
+is the person's call: the `pom.xml` version is left alone. Push is on hold.
 
 ## Dependent projects (surveyed 2026-11-16 under ~/works; nothing changed in them)
 
