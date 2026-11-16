@@ -221,4 +221,51 @@ class DistributedIIActorSystemTest {
             system.close();
         }
     }
+
+    // ---- getNodes agrees with what can be called ----
+
+    @Test
+    void getNodes_leavesOutAnUnregisteredNode() {
+        DistributedIIActorSystem system = systemWithPeer();
+        try {
+            system.unregisterRemoteNode("node-b");
+
+            List<String> ids = system.getNodes().stream().map(NodeInfo::getNodeId).toList();
+
+            assertEquals(List.of("node-a"), ids, "only this node is left");
+        } finally {
+            system.close();
+        }
+    }
+
+    @Test
+    void getNodes_includesANodeRegisteredByHand() {
+        DistributedIIActorSystem system = systemWithPeer();
+        try {
+            system.registerRemoteNode("node-c", "localhost", 8083);
+
+            List<String> ids = system.getNodes().stream().map(NodeInfo::getNodeId).toList();
+
+            assertEquals(List.of("node-a", "node-b", "node-c"), ids, "this node first, then the others by id");
+        } finally {
+            system.close();
+        }
+    }
+
+    @Test
+    void everyNodeInGetNodes_canBeCalled() {
+        DistributedIIActorSystem system = systemWithPeer();
+        try {
+            system.registerRemoteNode("node-c", "localhost", 8083);
+            system.unregisterRemoteNode("node-b");
+
+            for (NodeInfo node : system.getNodes()) {
+                if (!node.getNodeId().equals(system.getMyNode().getNodeId())) {
+                    assertNotNull(system.remoteActorOf(node, "x"), node.getNodeId());
+                }
+            }
+        } finally {
+            system.close();
+        }
+    }
 }

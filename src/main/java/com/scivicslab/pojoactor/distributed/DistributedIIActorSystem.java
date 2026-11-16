@@ -163,9 +163,18 @@ public class DistributedIIActorSystem extends IIActorSystem implements AutoClose
         return new RemoteActorRef(actorName, node, transport, callTimeout);
     }
 
-    /** Returns all nodes in the cluster (including this node). */
+    /**
+     * Returns this node first, then the registered remote nodes ordered by id. A node that was
+     * {@linkplain #unregisterRemoteNode unregistered} is not listed, and one added with
+     * {@link #registerRemoteNode} is, so the list agrees with the nodes that can be called.
+     */
     public List<NodeInfo> getNodes() {
-        return discovery.getAllNodes();
+        List<NodeInfo> nodes = new java.util.ArrayList<>();
+        nodes.add(myNode);
+        remoteNodes.values().stream()
+                .sorted(java.util.Comparator.comparing(NodeInfo::getNodeId))
+                .forEach(nodes::add);
+        return List.copyOf(nodes);
     }
 
     /** Returns this node's identity. */
