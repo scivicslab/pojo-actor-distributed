@@ -17,37 +17,44 @@
 
 package com.scivicslab.pojoactor.distributed;
 
-import com.scivicslab.pojoactor.action.ActionResult;
-import com.scivicslab.pojoactor.core.ActorSystem;
-import com.scivicslab.pojoactor.action.CallableByActionName;
 import com.scivicslab.pojoactor.distributed.transport.KafkaTransport;
+import org.apache.kafka.clients.consumer.Consumer;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
-import org.apache.kafka.clients.producer.KafkaProducer;
-import org.apache.kafka.clients.producer.ProducerConfig;
-import org.apache.kafka.clients.producer.ProducerRecord;
+import org.apache.kafka.clients.consumer.OffsetAndMetadata;
+import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.common.errors.WakeupException;
 import org.apache.kafka.common.serialization.StringDeserializer;
-import org.apache.kafka.common.serialization.StringSerializer;
 
 import java.time.Duration;
 import java.util.Collections;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Properties;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
 /**
- * Server-side component that receives actor messages from Kafka and dispatches
- * them to the local {@link ActorSystem}.
+ * Server-side component that reads actor messages from the node's Kafka inbox and hands them to
+ * a {@link Dispatcher}: the same allow-list and the same mailbox as {@link HttpActorServer}.
  *
- * <p>Consumes from {@code pojo-actor.{myNodeId}.inbox}, dispatches each message
- * to the named local actor, and — when the message has a {@code replyTo} — publishes
- * the result to {@code pojo-actor.{replyTo}.replies}.</p>
+ * <p>Consumes from {@code pojo-actor.{myNodeId}.inbox}. The position in the inbox is recorded
+ * by hand, only after the dispatcher has taken the message (into the actor's mailbox, or
+ * refused it). A receiver that dies in between reads the message again after it restarts, so a
+ * message is never lost, and the same message can arrive twice.</p>
+ *
+ * <p>A message that cannot be parsed, or that the dispatcher refuses, is logged and skipped:
+ * reading it again would not change the answer, and it would block every message behind it.
+ * A message the dispatcher fails to take (an exception) is not recorded and is read again.</p>
+ *
+ * <p>No answer is written back. An action that has an answer to give sends it as a new message
+ * to the sender's inbox.</p>
  *
  * <h2>Lifecycle</h2>
  * <pre>{@code
- * KafkaActorServer server = new KafkaActorServer(actorSystem, myNode, "kafka:9092");
+ * KafkaActorServer server = new KafkaActorServer(dispatcher, myNode, "kafka:9092");
  * server.start();   // begins consuming in a virtual thread
  * // ...
  * server.close();   // stops the consumer loop
@@ -59,25 +66,29 @@ public class KafkaActorServer implements AutoCloseable {
 
     private static final Logger logger = Logger.getLogger(KafkaActorServer.class.getName());
 
-    private final ActorSystem actorSystem;
+    private final Dispatcher dispatcher;
     private final NodeInfo myNode;
-    private final KafkaConsumer<String, String> consumer;
-    private final KafkaProducer<String, String> replyProducer;
+    private final Consumer<String, String> consumer;
     private volatile boolean running = false;
     private Thread serverThread;
 
     /**
      * Creates a KafkaActorServer.
      *
-     * @param actorSystem the local actor system to dispatch messages to
-     * @param myNode      this node's identity (determines which inbox topic to consume)
-     * @param brokers     Kafka bootstrap servers (e.g. {@code "kafka:9092"})
+     * @param dispatcher decides what may be called and runs it through the actor's mailbox
+     * @param myNode     this node's identity (determines which inbox topic to consume)
+     * @param brokers    Kafka bootstrap servers (e.g. {@code "kafka:9092"})
      */
-    public KafkaActorServer(ActorSystem actorSystem, NodeInfo myNode, String brokers) {
-        this.actorSystem = actorSystem;
+    public KafkaActorServer(Dispatcher dispatcher, NodeInfo myNode, String brokers) {
+        this(dispatcher, myNode,
+                new KafkaConsumer<>(consumerProperties(brokers, myNode.getNodeId())));
+    }
+
+    // For tests: a consumer that needs no broker.
+    KafkaActorServer(Dispatcher dispatcher, NodeInfo myNode, Consumer<String, String> consumer) {
+        this.dispatcher = dispatcher;
         this.myNode = myNode;
-        this.consumer = createConsumer(brokers, myNode.getNodeId());
-        this.replyProducer = createProducer(brokers);
+        this.consumer = consumer;
     }
 
     /**
@@ -97,24 +108,26 @@ public class KafkaActorServer implements AutoCloseable {
     @Override
     public synchronized void close() {
         running = false;
+        // The consumer is used by the loop thread only; wake it, let it leave, then close.
+        consumer.wakeup();
         if (serverThread != null) {
-            serverThread.interrupt();
+            try {
+                serverThread.join(5000);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
         }
         consumer.close(Duration.ofSeconds(5));
-        replyProducer.close(Duration.ofSeconds(5));
         logger.info("KafkaActorServer stopped on node " + myNode.getNodeId());
     }
 
     private void consumeLoop() {
-        String inboxTopic = KafkaTransport.inboxTopic(myNode.getNodeId());
-        consumer.subscribe(Collections.singletonList(inboxTopic));
-
+        consumer.subscribe(Collections.singletonList(KafkaTransport.inboxTopic(myNode.getNodeId())));
         while (running) {
             try {
-                ConsumerRecords<String, String> records = consumer.poll(Duration.ofMillis(200));
-                for (ConsumerRecord<String, String> record : records) {
-                    dispatch(record.value());
-                }
+                pollOnce(Duration.ofMillis(200));
+            } catch (WakeupException e) {
+                // close() asked the loop to leave
             } catch (Exception e) {
                 if (running) {
                     logger.log(Level.WARNING, "Error in KafkaActorServer consume loop", e);
@@ -123,90 +136,67 @@ public class KafkaActorServer implements AutoCloseable {
         }
     }
 
-    private void dispatch(String json) {
-        ActorMessage message = ActorMessage.fromJson(json);
-        if (message == null) {
-            logger.warning("Received unparseable message: " + json);
-            return;
-        }
+    /**
+     * Reads one batch and hands each message to the dispatcher in order. The position is
+     * recorded after the messages that were handed over; it stops at the first message the
+     * dispatcher failed to take, and that message is read again by the next poll.
+     */
+    void pollOnce(Duration timeout) {
+        ConsumerRecords<String, String> records = consumer.poll(timeout);
+        if (records.isEmpty()) return;
 
-        String actorName = message.getActorName();
-        CallableByActionName actor = resolveActor(actorName);
-        if (actor == null) {
-            logger.warning("No actor found for name: " + actorName);
-            sendReply(message, new ActionResult(false, "Actor not found: " + actorName));
-            return;
-        }
-
-        try {
-            ActionResult result = actor.callByActionName(message.getActionName(), message.getArgs());
-            sendReply(message, result);
-        } catch (Exception e) {
-            logger.log(Level.WARNING, "Actor dispatch failed for " + actorName, e);
-            sendReply(message, new ActionResult(false, "Dispatch error: " + e.getMessage()));
-        }
-    }
-
-    private CallableByActionName resolveActor(String actorName) {
-        try {
-            var ref = actorSystem.getActor(actorName);
-            if (ref == null) return null;
-            // ActorRef wraps the POJO; access via callByActionName if supported
-            Object obj = ref.ask(a -> a).join();
-            if (obj instanceof CallableByActionName callable) {
-                return callable;
+        Map<TopicPartition, OffsetAndMetadata> done = new HashMap<>();
+        boolean failed = false;
+        for (TopicPartition partition : records.partitions()) {
+            if (failed) {
+                // Not touched: go back to the first message of this partition.
+                consumer.seek(partition, records.records(partition).get(0).offset());
+                continue;
             }
-            // Fall back to action-name dispatch via ActorRef's annotation processor
-            return (action, args) -> ref.ask(a -> {
-                if (a instanceof CallableByActionName c) return c.callByActionName(action, args);
-                return new ActionResult(false, "Actor does not implement CallableByActionName");
-            }).join();
-        } catch (Exception e) {
-            logger.log(Level.WARNING, "Failed to resolve actor: " + actorName, e);
-            return null;
+            for (ConsumerRecord<String, String> record : records.records(partition)) {
+                try {
+                    handOver(record.value());
+                } catch (Exception e) {
+                    logger.log(Level.WARNING, "Could not hand over message at " + partition
+                            + " offset " + record.offset() + "; it will be read again", e);
+                    consumer.seek(partition, record.offset());
+                    failed = true;
+                    break;
+                }
+                done.put(partition, new OffsetAndMetadata(record.offset() + 1));
+            }
+        }
+        if (!done.isEmpty()) {
+            consumer.commitSync(done);
         }
     }
 
-    private void sendReply(ActorMessage request, ActionResult result) {
-        String replyTo = request.getReplyTo();
-        if (replyTo == null || replyTo.isBlank()) return;
-
-        String replyTopic = KafkaTransport.replyTopic(replyTo);
-        // Reuse messageId for correlation; args field carries the result payload
-        ActorMessage reply = new ActorMessage(
-                request.getActorName(),
-                request.getActionName(),
-                result.isSuccess() ? result.getResult() : "false:" + result.getResult(),
-                request.getMessageId(),
-                null
-        );
-        replyProducer.send(new ProducerRecord<>(replyTopic, request.getMessageId(), reply.toJson()),
-                (meta, ex) -> {
-                    if (ex != null) {
-                        logger.log(Level.WARNING, "Failed to send reply to " + replyTopic, ex);
-                    }
-                });
+    // Returns normally when the message needs no second try (taken, refused, or unparseable).
+    private void handOver(String json) {
+        ActorMessage message;
+        try {
+            message = ActorMessage.fromJson(json);
+        } catch (RuntimeException e) {
+            logger.warning("Skipping unparseable message: " + json);
+            return;
+        }
+        Dispatcher.Dispatch dispatch = dispatcher.dispatch(
+                message.getActorName(), message.getActionName(), message.getArgs());
+        if (!dispatch.accepted()) {
+            logger.warning("Skipping refused message " + message.getMessageId() + ": "
+                    + dispatch.result().join().getResult());
+        }
     }
 
-    // ---- Kafka factory methods ----
-
-    private static KafkaConsumer<String, String> createConsumer(String brokers, String nodeId) {
+    static Properties consumerProperties(String brokers, String nodeId) {
         Properties props = new Properties();
         props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, brokers);
         props.put(ConsumerConfig.GROUP_ID_CONFIG, "pojo-actor-server-" + nodeId);
         props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
         props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
         props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
-        props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, "true");
-        return new KafkaConsumer<>(props);
-    }
-
-    private static KafkaProducer<String, String> createProducer(String brokers) {
-        Properties props = new Properties();
-        props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, brokers);
-        props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
-        props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
-        props.put(ProducerConfig.ACKS_CONFIG, "1");
-        return new KafkaProducer<>(props);
+        // The position is recorded by hand, after the dispatcher has taken the message.
+        props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, "false");
+        return props;
     }
 }

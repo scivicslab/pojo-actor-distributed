@@ -92,7 +92,8 @@ public class DistributedActorSystem implements AutoCloseable {
      * @param brokers Kafka bootstrap servers
      */
     public void startServer(String brokers) {
-        kafkaServer = new KafkaActorServer(localActorSystem, myNode, brokers);
+        kafkaServer = new KafkaActorServer(
+                new AllowListDispatcher(localActorSystem, allowedActions), myNode, brokers);
         kafkaServer.start();
     }
 
