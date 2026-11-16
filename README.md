@@ -27,7 +27,7 @@ It holds everything that needs both POJO-actor's `ActorSystem` and Turing-workfl
 <dependency>
     <groupId>com.scivicslab</groupId>
     <artifactId>pojo-actor-distributed</artifactId>
-    <version>1.0.0</version>
+    <version>1.1.0</version>
 </dependency>
 ```
 
@@ -147,7 +147,7 @@ the actor that finishes the work sends the answer back as a new message to the s
 
 ## References
 
-- **Javadoc**: [API Reference](https://javadoc.io/doc/com.scivicslab/pojo-actor-distributed/1.0.0)
+- **Javadoc**: [API Reference](https://javadoc.io/doc/com.scivicslab/pojo-actor-distributed/1.1.0)
 - **POJO-actor**: [GitHub](https://github.com/scivicslab/POJO-actor)
 - **Turing-workflow**: [GitHub](https://github.com/scivicslab/Turing-workflow)
 
