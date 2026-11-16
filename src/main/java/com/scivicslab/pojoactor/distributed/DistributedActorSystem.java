@@ -69,6 +69,7 @@ public class DistributedActorSystem implements AutoCloseable {
     private final TransportLayer transport;
     private final NodeDiscovery discovery;
     private final NodeInfo myNode;
+    private final java.util.Set<AllowListDispatcher.AllowedAction> allowedActions;
     private KafkaActorServer kafkaServer;
     private HttpActorServer httpServer;
 
@@ -76,6 +77,7 @@ public class DistributedActorSystem implements AutoCloseable {
         this.localActorSystem = builder.localActorSystem;
         this.transport = builder.transport;
         this.discovery = builder.discovery;
+        this.allowedActions = java.util.Set.copyOf(builder.allowedActions);
         this.myNode = new NodeInfo(
                 discovery.getMyNodeId(),
                 discovery.getMyHost(),
@@ -118,7 +120,8 @@ public class DistributedActorSystem implements AutoCloseable {
      * @throws java.io.IOException if the address and port cannot be bound
      */
     public void startHttpServer(String bindAddress, int port) throws java.io.IOException {
-        httpServer = new HttpActorServer(localActorSystem, bindAddress, port);
+        httpServer = new HttpActorServer(
+                new AllowListDispatcher(localActorSystem, allowedActions), bindAddress, port);
         httpServer.start();
     }
 
@@ -205,6 +208,16 @@ public class DistributedActorSystem implements AutoCloseable {
         private ActorSystem localActorSystem;
         private TransportLayer transport = new HttpTransport();
         private NodeDiscovery discovery;
+        private java.util.Set<AllowListDispatcher.AllowedAction> allowedActions = java.util.Set.of();
+
+        /**
+         * Sets the (actor, action) pairs that remote callers may invoke. Defaults to none:
+         * nothing can be called from outside until it is listed here.
+         */
+        public Builder allowedActions(java.util.Set<AllowListDispatcher.AllowedAction> allowed) {
+            this.allowedActions = allowed;
+            return this;
+        }
 
         /** Sets the local actor system. Required. */
         public Builder localActorSystem(ActorSystem system) {

@@ -8,6 +8,9 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.net.URI;
+import java.util.Set;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
@@ -90,7 +93,8 @@ class HttpActorServerTest {
         CalcActor calc = new CalcActor();
         ActorRef<CalcActor> ref = system.actorOf("calc", calc);
 
-        HttpActorServer server = new HttpActorServer(system, port);
+        HttpActorServer server = new HttpActorServer(new AllowListDispatcher(system,
+                Set.of(new AllowListDispatcher.AllowedAction("calc", "add"))), port);
         server.start();
 
         try {
@@ -136,7 +140,8 @@ class HttpActorServerTest {
         ActorSystem system = new ActorSystem("test");
         system.addActor(new DispatchingRef("workflowCallable", system));
 
-        HttpActorServer server = new HttpActorServer(system, "127.0.0.1", port);
+        HttpActorServer server = new HttpActorServer(new AllowListDispatcher(system,
+                Set.of(new AllowListDispatcher.AllowedAction("workflowCallable", "step"))), "127.0.0.1", port);
         server.start();
 
         try {
@@ -164,7 +169,8 @@ class HttpActorServerTest {
         int port = 18182;
         ActorSystem system = new ActorSystem("test");
 
-        HttpActorServer server = new HttpActorServer(system, port);
+        HttpActorServer server = new HttpActorServer(new AllowListDispatcher(system,
+                Set.of(new AllowListDispatcher.AllowedAction("nonexistent", "action"))), port);
         server.start();
 
         try {
@@ -178,11 +184,95 @@ class HttpActorServerTest {
 
             HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
 
-            assertEquals(200, response.statusCode());
+            assertEquals(403, response.statusCode());
             assertTrue(response.body().contains("\"success\":false"));
         } finally {
             server.close();
             system.terminate();
         }
+    }
+
+    // ---- allow-list and mailbox behaviour over real HTTP ----
+
+    /** An action that blocks until released, to see when the HTTP answer comes back. */
+    static class SlowActor implements CallableByActionName {
+        final CountDownLatch started = new CountDownLatch(1);
+        final CountDownLatch release = new CountDownLatch(1);
+
+        @Override
+        public ActionResult callByActionName(String action, String args) {
+            started.countDown();
+            try { release.await(10, TimeUnit.SECONDS); } catch (InterruptedException e) { }
+            return new ActionResult(true, "slow-done");
+        }
+    }
+
+    private static HttpResponse<String> post(int port, String path, ActorMessage msg) throws Exception {
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create("http://127.0.0.1:" + port + path))
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(msg.toJson()))
+                .build();
+        return HttpClient.newHttpClient().send(request, HttpResponse.BodyHandlers.ofString());
+    }
+
+    @Test
+    void invoke_actionNotOnTheList_isRefusedAndNotRun() throws Exception {
+        int port = 18184;
+        ActorSystem system = new ActorSystem("test");
+        SlowActor slow = new SlowActor();
+        system.actorOf("slow", slow);
+        try (HttpActorServer server = new HttpActorServer(
+                new AllowListDispatcher(system, Set.of()), "127.0.0.1", port)) {
+            server.start();
+            HttpResponse<String> r = post(port, "/actor/slow/invoke", new ActorMessage("slow", "run", ""));
+            assertEquals(403, r.statusCode());
+            assertTrue(r.body().contains("\"success\":false"), r.body());
+            assertEquals(1, slow.started.getCount(), "a refused call must not run");
+        } finally {
+            system.terminate();
+        }
+    }
+
+    /** The receipt: /send answers once the call is in the mailbox, not once it has run. */
+    @Test
+    void send_answersWhenAcceptedNotWhenDone() throws Exception {
+        int port = 18185;
+        ActorSystem system = new ActorSystem("test");
+        SlowActor slow = new SlowActor();
+        system.actorOf("slow", slow);
+        try (HttpActorServer server = new HttpActorServer(new AllowListDispatcher(system,
+                Set.of(new AllowListDispatcher.AllowedAction("slow", "run"))), "127.0.0.1", port)) {
+            server.start();
+            HttpResponse<String> r = post(port, "/actor/slow/send", new ActorMessage("slow", "run", ""));
+            assertEquals(202, r.statusCode(), r.body());
+            assertTrue(r.body().contains("\"accepted\":true"), r.body());
+            assertTrue(slow.started.await(5, TimeUnit.SECONDS));
+            slow.release.countDown();
+        } finally {
+            system.terminate();
+        }
+    }
+
+    @Test
+    void send_actionNotOnTheList_isRefusedWithoutReceipt() throws Exception {
+        int port = 18186;
+        ActorSystem system = new ActorSystem("test");
+        system.actorOf("slow", new SlowActor());
+        try (HttpActorServer server = new HttpActorServer(
+                new AllowListDispatcher(system, Set.of()), "127.0.0.1", port)) {
+            server.start();
+            HttpResponse<String> r = post(port, "/actor/slow/send", new ActorMessage("slow", "run", ""));
+            assertEquals(403, r.statusCode());
+            assertTrue(r.body().contains("\"accepted\":false"), r.body());
+        } finally {
+            system.terminate();
+        }
+    }
+
+    @Test
+    void extractRoute_separatesTheNameFromTheVerb() {
+        assertEquals("project1/chat-01", HttpActorServer.extractActorName("/actor/project1/chat-01/send", "/send"));
+        assertNull(HttpActorServer.extractActorName("/actor/math/invoke", "/send"));
     }
 }

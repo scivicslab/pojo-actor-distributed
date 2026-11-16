@@ -64,7 +64,7 @@ class HttpActorServerBindAddressTest {
     void boundToLoopback_acceptsFromThisMachine() throws Exception {
         ActorSystem system = new ActorSystem("bind-loopback");
         int port = freePort();
-        try (HttpActorServer server = new HttpActorServer(system, "127.0.0.1", port)) {
+        try (HttpActorServer server = new HttpActorServer(new AllowListDispatcher(system, java.util.Set.of()), "127.0.0.1", port)) {
             server.start();
 
             assertTrue(canConnect(InetAddress.getByName("127.0.0.1"), port));
@@ -84,7 +84,7 @@ class HttpActorServerBindAddressTest {
 
         ActorSystem system = new ActorSystem("bind-loopback-only");
         int port = freePort();
-        try (HttpActorServer server = new HttpActorServer(system, "127.0.0.1", port)) {
+        try (HttpActorServer server = new HttpActorServer(new AllowListDispatcher(system, java.util.Set.of()), "127.0.0.1", port)) {
             server.start();
 
             assertTrue(canConnect(InetAddress.getByName("127.0.0.1"), port), "reachable on loopback");
@@ -103,7 +103,7 @@ class HttpActorServerBindAddressTest {
 
         ActorSystem system = new ActorSystem("bind-wildcard");
         int port = freePort();
-        try (HttpActorServer server = new HttpActorServer(system, port)) {
+        try (HttpActorServer server = new HttpActorServer(new AllowListDispatcher(system, java.util.Set.of()), port)) {
             server.start();
 
             assertTrue(canConnect(InetAddress.getByName("127.0.0.1"), port));
