@@ -160,4 +160,65 @@ class DistributedIIActorSystemTest {
         assertThrows(IllegalArgumentException.class,
                 () -> DistributedIIActorSystem.builder().deduplicateWith(null));
     }
+
+    // ---- unregistering a node ----
+
+    private DistributedIIActorSystem systemWithPeer() {
+        return DistributedIIActorSystem.builder()
+                .transport(new StubTransport())
+                .discovery(new StubDiscovery(nodeA, nodeB))
+                .noDeduplication()
+                .build();
+    }
+
+    @Test
+    void unregisterRemoteNode_makesGetRemoteActorFail() {
+        DistributedIIActorSystem system = systemWithPeer();
+        try {
+            assertNotNull(system.getRemoteActor("node-b", "x"));
+
+            system.unregisterRemoteNode("node-b");
+
+            assertThrows(IllegalArgumentException.class, () -> system.getRemoteActor("node-b", "x"));
+        } finally {
+            system.close();
+        }
+    }
+
+    @Test
+    void unregisterRemoteNode_makesRemoteActorOfFail() {
+        DistributedIIActorSystem system = systemWithPeer();
+        try {
+            assertNotNull(system.remoteActorOf(nodeB, "x"));
+
+            system.unregisterRemoteNode("node-b");
+
+            assertThrows(IllegalArgumentException.class, () -> system.remoteActorOf(nodeB, "x"));
+        } finally {
+            system.close();
+        }
+    }
+
+    @Test
+    void unregisterRemoteNode_forAnUnknownNodeDoesNothing() {
+        DistributedIIActorSystem system = systemWithPeer();
+        try {
+            assertDoesNotThrow(() -> system.unregisterRemoteNode("never-registered"));
+            assertNotNull(system.getRemoteActor("node-b", "x"), "other nodes are not affected");
+        } finally {
+            system.close();
+        }
+    }
+
+    @Test
+    void aNodeCanBeRegisteredAgainAfterItWasUnregistered() {
+        DistributedIIActorSystem system = systemWithPeer();
+        try {
+            system.unregisterRemoteNode("node-b");
+            system.registerRemoteNode("node-b", "localhost", 8082);
+            assertNotNull(system.getRemoteActor("node-b", "x"));
+        } finally {
+            system.close();
+        }
+    }
 }

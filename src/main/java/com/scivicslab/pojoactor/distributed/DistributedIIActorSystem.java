@@ -125,6 +125,19 @@ public class DistributedIIActorSystem extends IIActorSystem implements AutoClose
     }
 
     /**
+     * Forgets a node: afterwards {@link #getRemoteActor} and {@link #remoteActorOf} fail for it.
+     * A node that is not registered is ignored. References already handed out keep working until
+     * the node stops answering; this only stops new ones from being made.
+     *
+     * @param nodeId the id of the node to forget
+     */
+    public void unregisterRemoteNode(String nodeId) {
+        if (remoteNodes.remove(nodeId) != null) {
+            logger.info("Unregistered remote node: " + nodeId);
+        }
+    }
+
+    /**
      * Returns a reference to an actor on a registered node.
      *
      * @throws IllegalArgumentException if the node is not registered
@@ -141,8 +154,12 @@ public class DistributedIIActorSystem extends IIActorSystem implements AutoClose
      * Returns a {@link RemoteActorRef} for an actor on the given node.
      *
      * @return a proxy that reaches the actor through the configured transport
+     * @throws IllegalArgumentException if no node with that id is registered
      */
     public RemoteActorRef remoteActorOf(NodeInfo node, String actorName) {
+        if (!remoteNodes.containsKey(node.getNodeId())) {
+            throw new IllegalArgumentException("Remote node not registered: " + node.getNodeId());
+        }
         return new RemoteActorRef(actorName, node, transport, callTimeout);
     }
 
