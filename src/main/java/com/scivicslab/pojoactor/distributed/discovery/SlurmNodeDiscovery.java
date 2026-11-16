@@ -58,22 +58,11 @@ import java.util.logging.Logger;
  *         System.exit(1);
  *     }
  *
- *     DistributedActorSystem system = new DistributedActorSystem(
- *         discovery.getMyNodeId(),
- *         discovery.getMyHost(),
- *         discovery.getMyPort()
- *     );
- *
- *     // Register all remote nodes
- *     for (NodeInfo node : discovery.getAllNodes()) {
- *         if (!node.getNodeId().equals(discovery.getMyNodeId())) {
- *             system.registerRemoteNode(
- *                 node.getNodeId(),
- *                 node.getHost(),
- *                 node.getPort()
- *             );
- *         }
- *     }
+ *     DistributedIIActorSystem system = DistributedIIActorSystem.builder()
+ *         .discovery(discovery)
+ *         .noDeduplication()
+ *         .build();
+ *     // The other nodes in discovery.getAllNodes() are registered by the builder.
  * }
  * }</pre>
  *

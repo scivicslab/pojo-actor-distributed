@@ -31,32 +31,69 @@ It holds everything that needs both POJO-actor's `ActorSystem` and Turing-workfl
 </dependency>
 ```
 
-## The process that owns the actor
+## Quick start
 
-`DistributedIIActorSystem` starts an HTTP server on the port you give it and answers
-`POST /actor/{name}/invoke` for every actor registered with `addIIActor`.
+One class, `DistributedIIActorSystem`, is both the actor system and the way to reach other
+processes. It opens no port by itself: until `startHttpServer` is called nothing outside can
+reach it, and even then only what the allow-list names can be called.
+
+### The process that owns the actor
 
 ```java
-DistributedIIActorSystem system =
-        new DistributedIIActorSystem("worker", "0.0.0.0", 8081);
+NodeInfo me = new NodeInfo("worker", "127.0.0.1", 28081);
+
+DistributedIIActorSystem system = DistributedIIActorSystem.builder()
+        .discovery(new StaticNodeDiscovery(me, List.of()))
+        // Only these (actor, action) pairs can be called from outside. Nothing is allowed by default.
+        .allowedActions(Set.of(new AllowListDispatcher.AllowedAction("calculator", "add")))
+        // You must choose how duplicate messages are handled; build() refuses otherwise.
+        .deduplicateWith(new FileMessageIdStore(Path.of("seen-ids.log"), 10_000, Duration.ofHours(1)))
+        .build();
+
 system.addIIActor(new Calculator("calculator", system));
-Thread.currentThread().join();
+system.startHttpServer("127.0.0.1", 28081);   // 127.0.0.1: only this machine can call in
 ```
 
-## The process that calls it
+- A call from outside runs through the target actor's mailbox, so the actor still handles one
+  message at a time. A call that is not on the allow-list, or that names an actor that does not
+  exist, is refused with the same `Not allowed: actor/action` answer (HTTP 403).
+- `GET /health` answers 200 with no body and needs no allow-list entry.
+- `deduplicateWith(store)` drops the second and later copies of a message with the same
+  `messageId`. The store remembers at most the count and the age you give; both are required.
+  `FileMessageIdStore` survives a restart, `InMemoryMessageIdStore` does not.
+  `noDeduplication()` is the other choice: **every duplicate will run**, so choose it only when
+  the actions are safe to repeat.
 
-Name the other node once, then ask for an actor on it. `RemoteActorRef` sends
-`callByActionName` over HTTP and returns the `ActionResult` the other side produced, including
-a failure the action reported itself.
+### The process that calls it
 
 ```java
-DistributedIIActorSystem system =
-        new DistributedIIActorSystem("driver", "0.0.0.0", 8082);
-system.registerRemoteNode("worker", "worker.example.com", 8081);
+NodeInfo me = new NodeInfo("driver", "127.0.0.1", 28082);
+NodeInfo worker = new NodeInfo("worker", "127.0.0.1", 28081);
+
+DistributedIIActorSystem system = DistributedIIActorSystem.builder()
+        .discovery(new StaticNodeDiscovery(me, List.of(worker)))   // peers are registered for you
+        .callTimeout(Duration.ofSeconds(10))                       // wait of callByActionName; default 30 s
+        .noDeduplication()                                         // this process receives nothing
+        .build();
 
 RemoteActorRef calculator = system.getRemoteActor("worker", "calculator");
+
+// A short call: wait for the result.
 ActionResult result = calculator.callByActionName("add", "[\"10\"]");
+ActionResult quick  = calculator.callByActionName("add", "[\"10\"]", Duration.ofSeconds(2));
+
+// A long job: send it, get a receipt, and let the actor send its answer back as another message.
+Receipt receipt = calculator.send("longJob", "{}");
+if (!receipt.accepted()) { /* not taken: send again with the same messageId */ }
+
+// Resend with the same messageId until a receipt comes. You give the tries and the wait.
+Receipt sure = calculator.sendWithRetry("longJob", "{}", 5, Duration.ofSeconds(1));
 ```
+
+A `Receipt` says the remote side accepted the message into the actor's mailbox (HTTP) or the
+broker stored it in the inbox (Kafka). It does not say the action ran or succeeded. The module
+never resends on its own; `sendWithRetry` is the caller asking for it, and a receiver that
+deduplicates runs the action once however many copies arrive.
 
 ## Driving a remote actor from a workflow
 
@@ -81,19 +118,32 @@ steps:
 
 On a cluster you rarely know the addresses in advance. `NodeDiscoveryFactory.autoDetect()`
 reads the environment the scheduler sets up and returns the list of peers:
-`SLURM_JOB_NODELIST` on Slurm, `POD_NAME` and `KUBERNETES_SERVICE_HOST` on Kubernetes,
-`PE_HOSTFILE` on Grid Engine.
+`SLURM_JOB_NODELIST` on Slurm, `POD_NAME`, `SERVICE_NAME` and `KUBERNETES_SERVICE_HOST` on
+Kubernetes (`REPLICAS` gives the number of peers), `PE_HOSTFILE` on Grid Engine.
 
 ```java
 NodeDiscovery discovery = NodeDiscoveryFactory.autoDetect();
 List<NodeInfo> nodes = discovery.getAllNodes();
 ```
 
+On a machine that is none of these, such as several instances on one workstation, list the
+nodes yourself. `StaticNodeDiscovery` is never chosen by `autoDetect()`.
+
+```java
+NodeDiscovery discovery = new StaticNodeDiscovery(me,
+        StaticNodeDiscovery.parsePeers("b=127.0.0.1:28002, c=10.0.0.3:28003"));
+```
+
 ## Transports
 
 HTTP is the default and needs nothing else. `KafkaTransport` and `KafkaActorServer` carry the
 same messages over Kafka instead; `kafka-clients` is an optional dependency, so an HTTP-only
-deployment does not pull it in.
+deployment does not pull it in. `system.startServer("kafka:9092")` starts the Kafka receiver,
+which hands messages to the same allow-list and mailbox as HTTP and records its position only
+after the actor's mailbox has taken the message.
+
+Kafka has no synchronous call: `sendAndWait` is not offered. A request is sent with `send`, and
+the actor that finishes the work sends the answer back as a new message to the sender's inbox.
 
 ## References
 

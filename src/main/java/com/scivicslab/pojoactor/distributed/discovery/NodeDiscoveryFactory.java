@@ -32,7 +32,7 @@ import java.util.logging.Logger;
  * <h2>Supported Environments</h2>
  * <ul>
  * <li><strong>Slurm</strong> - Detects SLURM_JOB_NODELIST environment variable</li>
- * <li><strong>Kubernetes</strong> - Detects POD_NAME and KUBERNETES_SERVICE_HOST</li>
+ * <li><strong>Kubernetes</strong> - Detects POD_NAME, SERVICE_NAME and KUBERNETES_SERVICE_HOST (REPLICAS lists the peers)</li>
  * <li><strong>Grid Engine</strong> - Detects PE_HOSTFILE environment variable</li>
  * </ul>
  *
@@ -42,23 +42,11 @@ import java.util.logging.Logger;
  *     // Auto-detect environment and discover nodes
  *     NodeDiscovery discovery = NodeDiscoveryFactory.autoDetect();
  *
- *     // Create distributed actor system
- *     DistributedActorSystem system = new DistributedActorSystem(
- *         discovery.getMyNodeId(),
- *         discovery.getMyHost(),
- *         discovery.getMyPort()
- *     );
- *
- *     // Register all remote nodes
- *     for (NodeInfo node : discovery.getAllNodes()) {
- *         if (!node.getNodeId().equals(discovery.getMyNodeId())) {
- *             system.registerRemoteNode(
- *                 node.getNodeId(),
- *                 node.getHost(),
- *                 node.getPort()
- *             );
- *         }
- *     }
+ *     DistributedIIActorSystem system = DistributedIIActorSystem.builder()
+ *         .discovery(discovery)
+ *         .noDeduplication()
+ *         .build();
+ *     // The other nodes in discovery.getAllNodes() are registered by the builder.
  *
  *     // Register actors and start processing
  *     // ...
@@ -79,7 +67,7 @@ public class NodeDiscoveryFactory {
      * <p>Detection priority:</p>
      * <ol>
      * <li>Slurm (checks SLURM_JOB_NODELIST)</li>
-     * <li>Kubernetes (checks POD_NAME and KUBERNETES_SERVICE_HOST)</li>
+     * <li>Kubernetes (checks POD_NAME, SERVICE_NAME and KUBERNETES_SERVICE_HOST)</li>
      * <li>Grid Engine (checks PE_HOSTFILE)</li>
      * </ol>
      *

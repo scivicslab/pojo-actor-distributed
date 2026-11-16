@@ -32,25 +32,14 @@ import java.util.List;
  * // Auto-detect environment and discover nodes
  * NodeDiscovery discovery = NodeDiscoveryFactory.autoDetect();
  *
- * // Get current node information
- * String myNodeId = discovery.getMyNodeId();
- * String myHost = discovery.getMyHost();
- * int myPort = 8080;
+ * // Build the distributed actor system on it; the other nodes are registered for you
+ * DistributedIIActorSystem system = DistributedIIActorSystem.builder()
+ *     .discovery(discovery)
+ *     .noDeduplication()
+ *     .build();
  *
- * // Create distributed actor system
- * DistributedActorSystem system =
- *     new DistributedActorSystem(myNodeId, myHost, myPort);
- *
- * // Register all remote nodes
- * for (NodeInfo node : discovery.getAllNodes()) {
- *     if (!node.getNodeId().equals(myNodeId)) {
- *         system.registerRemoteNode(
- *             node.getNodeId(),
- *             node.getHost(),
- *             node.getPort()
- *         );
- *     }
- * }
+ * // This node's identity, as the discovery sees it
+ * NodeInfo me = system.getMyNode();
  * }</pre>
  *
  * @author devteam@scivicslab.com

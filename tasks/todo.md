@@ -40,4 +40,4 @@ and `RemoteActorRef.send` return `Receipt` instead of `void`; (4) a refused `/in
 Version bump to 1.1.0 is the person's decision (see CLAUDE.md: keep the three repos in sync).
 
 ## After Step 8 (left for later, per the person)
-- [ ] One docs commit: stale `DistributedActorSystem` text in `reference/distributed.md`, the `NodeDiscovery*` javadoc examples, README, and the design doc's discrepancy list.
+- [x] One docs commit: stale `DistributedActorSystem` text in `reference/distributed.md`, the `NodeDiscovery*` javadoc examples, README, and the design doc's discrepancy list.

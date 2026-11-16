@@ -1,4 +1,4 @@
-# Distributed actors — DistributedActorSystem
+# Distributed actors — DistributedIIActorSystem
 
 Build an actor system that spans multiple nodes in an HPC cluster or on Kubernetes.
 
@@ -25,7 +25,8 @@ NodeDiscovery discovery = NodeDiscoveryFactory.autoDetect();
 | Implementation class | Detection method |
 |----------------------|-----------------|
 | `SlurmNodeDiscovery` | Environment variable `SLURM_JOB_NODELIST` |
-| `K8sNodeDiscovery` | `POD_NAME` + `KUBERNETES_SERVICE_HOST` |
+| `K8sNodeDiscovery` | `POD_NAME` + `SERVICE_NAME` + `KUBERNETES_SERVICE_HOST` (`REPLICAS` lists the peers) |
+| `StaticNodeDiscovery` | Never detected: you give the node list |
 | `GridEngineNodeDiscovery` | `PE_HOSTFILE` |
 
 ---
@@ -35,10 +36,11 @@ NodeDiscovery discovery = NodeDiscoveryFactory.autoDetect();
 ```java
 NodeDiscovery discovery = NodeDiscoveryFactory.autoDetect();
 
-DistributedActorSystem dist = DistributedActorSystem.builder()
-    .localActorSystem(new ActorSystem("node"))
+DistributedIIActorSystem dist = DistributedIIActorSystem.builder()
     .transport(new HttpTransport())
     .discovery(discovery)
+    .allowedActions(Set.of(new AllowListDispatcher.AllowedAction("my-actor", "process")))
+    .noDeduplication()           // or .deduplicateWith(store); one of the two is required
     .build();
 
 dist.startHttpServer(8080);
@@ -49,6 +51,9 @@ ActionResult result = remote.callByActionName("process", payload);
 
 dist.close();
 ```
+
+Nothing can be called from outside until it is on `allowedActions`. `GET /health` answers 200
+with no body.
 
 ---
 
@@ -62,19 +67,37 @@ KafkaTransport transport = new KafkaTransport(
     "kafka:9092"
 );
 
-DistributedActorSystem dist = DistributedActorSystem.builder()
-    .localActorSystem(new ActorSystem("node"))
+DistributedIIActorSystem dist = DistributedIIActorSystem.builder()
     .transport(transport)
     .discovery(discovery)
+    .allowedActions(Set.of(new AllowListDispatcher.AllowedAction("my-actor", "process")))
+    .deduplicateWith(store)      // Kafka can deliver a message twice
     .build();
 
 dist.startServer("kafka:9092");
 
 RemoteActorRef remote = dist.remoteActorOf(dist.getNodes().get(1), "my-actor");
-ActionResult result = remote.callByActionName("process", payload);
+Receipt receipt = remote.send("process", payload);   // the broker's acknowledgement
 
 dist.close();
 ```
+
+Kafka has no synchronous call. `sendAndWait` returns a failure; send the request with `send`,
+and have the actor send its answer back as a new message.
+
+---
+
+## Sending without waiting
+
+```java
+Receipt receipt = remote.send("longJob", payload);                       // one try
+Receipt sure = remote.sendWithRetry("longJob", payload, 5, Duration.ofSeconds(1));  // same messageId each try
+ActionResult quick = remote.callByActionName("ping", "", Duration.ofSeconds(2));
+```
+
+`Receipt.accepted()` means the remote mailbox (HTTP) or the broker's inbox (Kafka) has the
+message, not that the action ran. With `deduplicateWith(store)` on the receiver, however many
+copies arrive, the action runs once.
 
 ---
 
@@ -101,14 +124,18 @@ public class MyActor implements CallableByActionName {
 
 ## Key classes
 
-| Class | Package | Role |
-|-------|---------|------|
-| `DistributedActorSystem` | `core.distributed` | Adds distributed capability to a local ActorSystem |
-| `RemoteActorRef` | `core.distributed` | Reference to an actor on a remote node |
-| `ActorMessage` | `core.distributed` | Data class for distributed messages |
-| `NodeInfo` | `core.distributed` | Node information (nodeId, host, port) |
-| `HttpActorServer` | `core.distributed` | HTTP message receiver server |
-| `KafkaActorServer` | `core.distributed` | Kafka message receiver server |
-| `NodeDiscoveryFactory` | `core.distributed.discovery` | Factory for auto-detecting the environment |
-| `HttpTransport` | `core.distributed.transport` | HTTP transport implementation |
-| `KafkaTransport` | `core.distributed.transport` | Kafka transport implementation |
+All classes are in `com.scivicslab.pojoactor.distributed` unless a sub-package is shown.
+
+| Class | Role |
+|-------|------|
+| `DistributedIIActorSystem` | The distributed actor system: an `IIActorSystem` that can call and be called across processes |
+| `RemoteActorRef` | Reference to an actor on a remote node (`callByActionName`, `send`, `sendWithRetry`) |
+| `Receipt` | The answer to `send`: accepted or not, with the `messageId` |
+| `ActorMessage` | Data class for distributed messages |
+| `NodeInfo` | Node information (nodeId, host, port) |
+| `Dispatcher`, `AllowListDispatcher` | Checks the allow-list and runs a call through the actor's mailbox |
+| `DedupDispatcher`, `MessageIdStore`, `InMemoryMessageIdStore`, `FileMessageIdStore` | Drop the second copy of a message |
+| `HttpActorServer` | HTTP receiver (`/actor/{name}/invoke`, `/actor/{name}/send`, `/health`) |
+| `KafkaActorServer` | Kafka receiver |
+| `discovery.NodeDiscoveryFactory`, `discovery.StaticNodeDiscovery` | Environment detection, or a configured node list |
+| `transport.HttpTransport`, `transport.KafkaTransport` | Transport implementations |
