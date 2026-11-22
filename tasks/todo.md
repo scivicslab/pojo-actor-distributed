@@ -78,3 +78,29 @@ re-running the same action. Build pod `mvn-c83` (ubuntu:24.04 + GraalVM CE 25). 
 - [ ] `HttpTransport.parseResponse` (used by `sendAndWait`) should report an answer that is not JSON, or not
       2xx, as `HTTP <status>: <body>`; today a 503 `message id store unavailable` reads as
       `Failed to parse response`. The sender is not changed in audit item 18 (chat-57's decision).
+
+## Kafka ITs against a real broker on W206 (chat-84, 2026-11-22)
+Decided by chat-57: broker `apache/kafka:4.4.0` (single-node KRaft StatefulSet + headless Service) in namespace
+`pad-kafka-it`, manifests in `src/it/k8s/`; `tasks/kafka-it.sh` (kubectl only, on 5.12) creates the namespace, broker
+and build pod `mvn-c84` (ServiceAccount + Role: get/list/delete pods in that namespace), runs `mvn verify` there and
+always deletes the namespace. Failsafe only in profile `kafka-it`, activated by `-Dkafka.it.bootstrap=<broker>`;
+plain `mvn install`/`verify` unchanged. `-Dgpg.skip=true`. 1 partition per inbox. `@Tag("DistributedActorSystemRedesign_261115_oo01")`.
+No push; version stays 1.2.0-SNAPSHOT.
+
+- [x] pom profile `kafka-it` (failsafe) + `src/it/k8s/*.yaml` + `tasks/kafka-it.sh`; commit
+- [x] Plain `mvn verify -Dgpg.skip=true` without the property runs no IT (checked in the pod)
+- [x] ITs: A send/receipt/run once, answer as a send, sendAndWait refuses; B committed position across a receiver stop;
+      C store breaks/repairs: pause, backoff, resume; D broker pod deleted: reconnect, receipt during the outage;
+      E redelivery after a position reset runs once with FileMessageIdStore across the restart; commit
+- [x] Findings: no fix in the transport; one design question to chat-57 (below)
+- [x] Docs: javadoc of KafkaActorServer/KafkaTransport/DedupDispatcher and README; commit
+- [x] Cleanup check: `kubectl get ns pad-kafka-it`, `kubectl get pods -A`
+
+### Review
+- `mvn verify` in `mvn-c84` with `-Dkafka.it.bootstrap`: 143 unit tests and 8 ITs, 0 failures; without the
+  property: 143 unit tests, no failsafe. `kafka-it.sh` deletes the namespace (checked with `kubectl get ns`).
+- Finding (case D, design question): during a broker outage `KafkaTransport.send` gives a receipt that is not
+  accepted after 30 s, but the producer keeps the record and delivered it after the broker came back. Resending
+  with the same `messageId` plus dedup ran it once. Documented in the KafkaTransport javadoc and README.
+- Not covered: inboxes with more than one partition (order), several brokers, TLS/auth, a sender whose producer
+  has no metadata yet when the broker is down.

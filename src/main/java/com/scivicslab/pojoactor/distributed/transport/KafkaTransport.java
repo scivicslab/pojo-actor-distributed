@@ -50,6 +50,18 @@ import java.util.logging.Logger;
  * idempotent producer). That means the message is stored in the inbox, not that the remote actor
  * has taken it into its mailbox: the receiver does that when it reads the inbox.</p>
  *
+ * <p>A receipt that is not accepted does not mean the message was not stored. When the broker does
+ * not answer within the 30 s that {@link #send} waits, the receipt is not accepted, but the producer
+ * keeps the message and goes on trying to deliver it. Against a real broker that was restarted,
+ * such a message was delivered after the broker came back. A sender that sends again after a
+ * receipt that was not accepted must use the same {@code messageId}, and the receiver must drop
+ * duplicates.</p>
+ *
+ * <h2>Tests</h2>
+ * <p>The unit tests use Kafka's {@code MockProducer}. The integration tests ({@code *IT.java}, run
+ * by {@code tasks/kafka-it.sh}) send through a real broker on k8s; see {@code KafkaActorServer}
+ * for what they check and what they do not.</p>
+ *
  * <h2>No synchronous call</h2>
  * <p>{@link #sendAndWait} is not offered. A long request is sent with {@link #send}; when the
  * work is done, the receiving actor sends the answer back as another message to the sender's

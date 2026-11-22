@@ -62,8 +62,14 @@ import java.util.logging.Logger;
  * <p>No answer is written back. An action that has an answer to give sends it as a new message
  * to the sender's inbox.</p>
  *
- * <p>Tested only against Kafka's {@code MockConsumer} (and the sender against
- * {@code MockProducer}); no test uses a real broker.</p>
+ * <h2>Tests</h2>
+ * <p>The unit tests use Kafka's {@code MockConsumer}. The integration tests ({@code *IT.java},
+ * run by {@code tasks/kafka-it.sh} against a single Kafka broker on k8s, one partition per inbox)
+ * check against a real broker: a stopped receiver resumes from its committed position, the inbox
+ * pauses while the message-id store fails and resumes by itself, the receiver goes on after the
+ * broker restarts, and a redelivered message is dropped by a {@link FileMessageIdStore} that
+ * survived the restart. Not tested: inboxes with more than one partition (and so the order of
+ * messages across partitions), a cluster of several brokers, and TLS or authentication.</p>
  *
  * <h2>Lifecycle</h2>
  * <pre>{@code

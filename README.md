@@ -145,6 +145,32 @@ after the actor's mailbox has taken the message.
 Kafka has no synchronous call: `sendAndWait` is not offered. A request is sent with `send`, and
 the actor that finishes the work sends the answer back as a new message to the sender's inbox.
 
+A `send` whose receipt is not accepted may still be delivered: when the broker does not answer
+within 30 s the receipt says not accepted, but the producer keeps the message and delivers it once
+the broker is back. Send again with the same `messageId`, and let the receiver drop duplicates
+(`deduplicateWith(store)`).
+
+### Testing the Kafka path
+
+`mvn test` runs the unit tests, which use Kafka's `MockConsumer` and `MockProducer`. The
+integration tests (`*IT.java`) run against a real broker on the W206 k8s cluster:
+
+```bash
+tasks/kafka-it.sh
+```
+
+The script creates the namespace `pad-kafka-it` with a single-node Kafka (KRaft) and a build pod,
+runs `mvn verify -Dgpg.skip=true -Dkafka.it.bootstrap=<broker>` in the pod, copies the reports to
+`target/kafka-it-reports/`, and deletes the namespace. The property `kafka.it.bootstrap` turns on
+the Maven profile `kafka-it`; without it, `mvn verify` and `mvn install` run the unit tests only.
+
+They check, against the real broker: a `send` is accepted and runs once, and an answer comes back
+as a `send` to the sender's inbox (`sendAndWait` is refused); a stopped receiver resumes from its
+committed position; the inbox pauses while the message-id store fails and resumes by itself; the
+receiver goes on after the broker pod is deleted and comes back; a redelivered message runs once
+with a `FileMessageIdStore` across a restart. Not tested: inboxes with more than one partition
+(and so message order across partitions), a cluster of several brokers, and TLS or authentication.
+
 ## References
 
 - **Javadoc**: [API Reference](https://javadoc.io/doc/com.scivicslab/pojo-actor-distributed/1.1.0)
