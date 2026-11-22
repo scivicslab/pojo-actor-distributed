@@ -104,3 +104,29 @@ No push; version stays 1.2.0-SNAPSHOT.
   with the same `messageId` plus dedup ran it once. Documented in the KafkaTransport javadoc and README.
 - Not covered: inboxes with more than one partition (order), several brokers, TLS/auth, a sender whose producer
   has no metadata yet when the broker is down.
+
+## Release preparation: versions of four projects, chain build, remote-call guarantee tests (chat-82, 2026-11-23)
+Decided by the person via chat-57: pojo-actor-distributed is released with POJO-actor, Turing-workflow and
+Turing-workflow-plugins under one version. This job prepares it; the number itself is changed by chat-01 at release.
+The `pom.xml` versions are left alone (1.2.0-SNAPSHOT, `pojo-actor.version` 4.0.0, `turing-workflow.version` 4.0.0).
+Build pod `mvn-c82` (ubuntu:24.04 + GraalVM CE 25). No push.
+
+- [x] Table of what changes in `pom.xml`, README and the two scripts at release, sent to chat-57 (no number changed)
+- [x] `tasks/w206-chain-build.sh`: POJO-actor -> Turing-workflow -> (plugins) -> pojo-actor-distributed in one pod
+- [x] Tests on POJO-actor with t2050 (`be5f9a3`) and `awaitHelping` (`0707e54`): neither is on main, so a throwaway clone of
+      main with `t2050` merged (conflict only in `ActorRef.java` javadoc, main's text kept) is the base
+- [x] Remote-call guarantee tests (`RemoteGuaranteeSupport`, `RemoteGuaranteesBase`, four subclasses): order,
+      at most one thread inside, no lost write, action on the receive loop's virtual thread; for the Dispatcher,
+      HTTP `send`, HTTP `invoke` and the Kafka inbox (`MockConsumer`); both for a POJO behind a plain reference and
+      for a reference that is called by action name
+- [x] ReleaseProcedure (doc_Base010): the four projects, their order, and the two properties step 2 does not change
+
+### Review
+- Chain build in `mvn-c82` (`POD=mvn-c82 POJO_ACTOR_DIR=<clone of main with t2050 merged> tasks/w206-chain-build.sh test`):
+  POJO-actor 393 tests, Turing-workflow 453 tests, pojo-actor-distributed 165 tests (145 before, 20 new), 0 failures,
+  0 errors, 0 skipped. `rm -rf target` before each build; no `-DskipTests`.
+- Red check of the new tests: in a copy inside the pod, `AllowListDispatcher.runInMailbox` calls `askNow` instead of `ask`
+  (the call skips the mailbox): 18 of the 20 tests fail. `messagesStartInTheOrderTheyWereSent` stays green for
+  `HttpSendGuaranteesTest` and `HttpInvokeGuaranteesTest`: with HTTP, each call is awaited before the next is sent.
+- Not covered: Kafka against a real broker (the ITs are in `*IT.java`); an inbox with more than one partition;
+  a call from an actor's own message to itself.
