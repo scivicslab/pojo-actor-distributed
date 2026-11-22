@@ -52,3 +52,21 @@ Tests carry `@Tag("DistributedActorSystemRedesign_261115_oo01")`. One commit per
 - [x] Finding 8a: `AllowListDispatcher` refuses an allowed actor whose message loop has died (`!ref.isAlive()`), "Not accepted: actor not running"; allow-list check stays first. Failing test first (action throws `StackOverflowError`). `runInMailbox`'s `catch (Exception e)` is not changed (the person's decision)
 - [x] Finding 8b: `KafkaActorServer.consumeLoop` guards `subscribe` (retried next turn) and catches `Throwable` around the loop body (SEVERE); a `VirtualMachineError` other than `StackOverflowError` is logged and rethrown. Failing tests first (poll throws `StackOverflowError` once; subscribe throws once)
 - [x] Full `mvn test` green after `rm -rf target`; commit 7, commit 8
+
+## Audit item 18: the message-id store cannot record (chat-83, 2026-11-22)
+Decided by the person (option A): while the store cannot record, the receiver stops taking messages instead of
+re-running the same action. Build pod `mvn-c83` (ubuntu:24.04 + GraalVM CE 25). No push; version stays 1.2.0-SNAPSHOT.
+
+- [x] Baseline: full `mvn test` green in `mvn-c83` (133 run, 0 failures, 0 errors, 0 skipped)
+- [x] Failing tests first (140 run, 2 failures, 4 errors; only `recover_withNothingPending_isTrue` passed): (1) HTTP 503 while the store is down, the first message ran once; (2) Kafka pauses, no
+      second run, resumes after recovery and commits; (3) `FileMessageIdStore` works again after a failed `compact()`;
+      plus `DedupDispatcher` unit tests for the pending id and the backoff (1 s, doubling, 30 s cap)
+- [x] `Dispatcher.Dispatch` gets a third outcome, UNAVAILABLE, besides accepted and refused; `Dispatcher.recover()`
+      (default: available)
+- [x] `DedupDispatcher`: a failed `seen.add` keeps the accepted result, logs SEVERE, keeps the id pending; while
+      pending, each call first probes `seen.add` (no more often than the backoff) and otherwise answers UNAVAILABLE
+- [x] `HttpActorServer`: UNAVAILABLE answers 503 `message id store unavailable`, not dispatched
+- [x] `KafkaActorServer`: UNAVAILABLE seeks back, records nothing from that message on, pauses the assignment; each
+      turn probes `recover()` and resumes when it is available. Javadoc: tested only against MockConsumer
+- [x] `FileMessageIdStore`: a failed `compact()` leaves no closed channel; the next `add` reopens the file
+- [x] Full `mvn test` green after `rm -rf target` (140 run, 0 failures, 0 errors, 0 skipped); commit (store), commit (receivers)

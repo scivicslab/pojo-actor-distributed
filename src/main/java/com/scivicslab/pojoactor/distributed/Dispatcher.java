@@ -46,17 +46,64 @@ public interface Dispatcher {
     }
 
     /**
+     * Tries to become able to take calls again after {@link #dispatch} answered
+     * {@link Dispatch.Outcome#UNAVAILABLE}. A receiver that has stopped reading (the Kafka
+     * receiver pauses its inbox) calls this on each turn and starts reading again when it is
+     * true. It may return false without trying, when it tried too recently.
+     *
+     * @return true when calls can be taken; a dispatcher that is never unavailable is always true
+     */
+    default boolean recover() {
+        return true;
+    }
+
+    /**
      * The outcome of {@link #dispatch}.
      *
-     * @param accepted true when the call is in the actor's mailbox; false when it was refused
-     * @param result   completes with the action's result once it has run; for a refused call it
-     *                 is already complete with a failure
+     * @param outcome what happened to the call
+     * @param result  completes with the action's result once it has run; for a call that was not
+     *                accepted it is already complete with a failure that says why
      */
-    record Dispatch(boolean accepted, CompletableFuture<ActionResult> result) {
+    record Dispatch(Outcome outcome, CompletableFuture<ActionResult> result) {
+
+        /** What happened to a call. */
+        public enum Outcome {
+            /** The call is in the actor's mailbox: the receipt. */
+            ACCEPTED,
+            /** The call will never run as sent (not allowed, no such actor, actor not running). */
+            REFUSED,
+            /**
+             * The call was not taken now, but the same call may be taken later: the receiver
+             * cannot work safely for the moment (the message-id store cannot record). Nothing
+             * was put in a mailbox; send it again later with the same {@code messageId}.
+             */
+            UNAVAILABLE
+        }
+
+        /** An accepted call when {@code accepted} is true, a refused one when it is false. */
+        public Dispatch(boolean accepted, CompletableFuture<ActionResult> result) {
+            this(accepted ? Outcome.ACCEPTED : Outcome.REFUSED, result);
+        }
+
+        /** @return true when the call is in the actor's mailbox: the receipt */
+        public boolean accepted() {
+            return outcome == Outcome.ACCEPTED;
+        }
+
+        /** @return true when the call was not taken now but may be taken later */
+        public boolean unavailable() {
+            return outcome == Outcome.UNAVAILABLE;
+        }
 
         /** A refused call. */
         public static Dispatch refused(String reason) {
-            return new Dispatch(false, CompletableFuture.completedFuture(new ActionResult(false, reason)));
+            return new Dispatch(Outcome.REFUSED, CompletableFuture.completedFuture(new ActionResult(false, reason)));
+        }
+
+        /** A call not taken now that may be taken later. */
+        public static Dispatch unavailable(String reason) {
+            return new Dispatch(Outcome.UNAVAILABLE,
+                    CompletableFuture.completedFuture(new ActionResult(false, reason)));
         }
     }
 }

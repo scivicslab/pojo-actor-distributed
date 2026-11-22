@@ -33,6 +33,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Properties;
+import java.util.Set;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -51,8 +52,18 @@ import java.util.logging.Logger;
  * again. The consume loop keeps running through such failures and through a failed subscribe;
  * only a {@link VirtualMachineError} other than {@link StackOverflowError} ends it.</p>
  *
+ * <p>When the dispatcher answers {@link Dispatcher.Dispatch.Outcome#UNAVAILABLE} (the message-id
+ * store cannot record), the message is not taken: the consumer goes back to it, records no
+ * position from it on, and pauses every assigned partition. It keeps polling while paused (the
+ * polls return nothing) and asks {@link Dispatcher#recover()} at the start of each turn; the
+ * dispatcher decides how often it really tries (see {@link DedupDispatcher}) and logs each failed
+ * try. When it recovers, the partitions are resumed and the message is read again.</p>
+ *
  * <p>No answer is written back. An action that has an answer to give sends it as a new message
  * to the sender's inbox.</p>
+ *
+ * <p>Tested only against Kafka's {@code MockConsumer} (and the sender against
+ * {@code MockProducer}); no test uses a real broker.</p>
  *
  * <h2>Lifecycle</h2>
  * <pre>{@code
@@ -173,11 +184,19 @@ public class KafkaActorServer implements AutoCloseable {
      * dispatcher failed to take, and that message is read again by the next poll.
      */
     void pollOnce(Duration timeout) {
+        Set<TopicPartition> paused = consumer.paused();
+        if (!paused.isEmpty() && dispatcher.recover()) {
+            consumer.resume(paused);
+            logger.info("KafkaActorServer on node " + myNode.getNodeId() + " reads its inbox again");
+        }
+        // A paused consumer still polls: the poll returns nothing from a paused partition, and
+        // it keeps this consumer in its group.
         ConsumerRecords<String, String> records = consumer.poll(timeout);
         if (records.isEmpty()) return;
 
         Map<TopicPartition, OffsetAndMetadata> done = new HashMap<>();
         boolean failed = false;
+        boolean unavailable = false;
         Error error = null;
         for (TopicPartition partition : records.partitions()) {
             if (failed) {
@@ -187,7 +206,14 @@ public class KafkaActorServer implements AutoCloseable {
             }
             for (ConsumerRecord<String, String> record : records.records(partition)) {
                 try {
-                    handOver(record.value());
+                    if (!handOver(record.value())) {
+                        // Not taken, and must not be taken by a later poll before the
+                        // dispatcher can take calls again: go back to it and stop reading.
+                        consumer.seek(partition, record.offset());
+                        unavailable = true;
+                        failed = true;
+                        break;
+                    }
                 } catch (Exception e) {
                     logger.log(Level.WARNING, "Could not hand over message at " + partition
                             + " offset " + record.offset() + "; it will be read again", e);
@@ -208,30 +234,41 @@ public class KafkaActorServer implements AutoCloseable {
         if (!done.isEmpty()) {
             consumer.commitSync(done);
         }
+        if (unavailable) {
+            consumer.pause(consumer.assignment());
+            logger.severe("KafkaActorServer on node " + myNode.getNodeId() + " stops reading its inbox:"
+                    + " the dispatcher cannot take calls for the moment; it reads again when the"
+                    + " dispatcher recovers");
+        }
         if (error != null) {
             throw error;
         }
     }
 
-    // Returns normally when the message needs no second try (taken, refused, or unparseable).
-    private void handOver(String json) {
+    // Returns true when the message needs no second try (taken, refused, or unparseable), false
+    // when the dispatcher cannot take calls for the moment. Throws when handing over failed.
+    private boolean handOver(String json) {
         ActorMessage message;
         try {
             message = ActorMessage.fromJson(json);
         } catch (RuntimeException e) {
             logger.warning("Skipping unparseable message: " + json);
-            return;
+            return true;
         }
         // The JSON text "null" parses without error to no message; it is no more usable.
         if (message == null) {
             logger.warning("Skipping unparseable message: " + json);
-            return;
+            return true;
         }
         Dispatcher.Dispatch dispatch = dispatcher.dispatch(message);
+        if (dispatch.unavailable()) {
+            return false;
+        }
         if (!dispatch.accepted()) {
             logger.warning("Skipping refused message " + message.getMessageId() + ": "
                     + dispatch.result().join().getResult());
         }
+        return true;
     }
 
     static Properties consumerProperties(String brokers, String nodeId) {

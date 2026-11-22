@@ -50,6 +50,10 @@ import java.util.logging.Logger;
  * POST /actor/{actorName}/send     answers as soon as the call is in the actor's mailbox
  *   202 {"accepted":true}                  the receipt: accepted, not yet run
  *   403 {"accepted":false,"result":"..."}  refused: no receipt
+ *
+ * Both answer, when the dispatcher cannot take calls for the moment (the message-id store cannot
+ * record):
+ *   503 message id store unavailable       (text/plain) not run; send it again later
  * </pre>
  * The body of both is an {@link ActorMessage} as JSON. The actor name may contain slashes.
  *
@@ -175,6 +179,12 @@ public class HttpActorServer implements AutoCloseable {
                     actorName, message.getActionName(), message.getArgs(),
                     message.getMessageId(), message.getReplyTo()));
 
+            if (dispatch.unavailable()) {
+                // Nothing was put in a mailbox; the sender may send the same message again later.
+                sendResponse(exchange, 503, "text/plain; charset=utf-8", dispatch.result().join().getResult());
+                return;
+            }
+
             if (send) {
                 // The receipt: the call is in the mailbox. Do not wait for it to run.
                 if (dispatch.accepted()) {
@@ -198,8 +208,12 @@ public class HttpActorServer implements AutoCloseable {
     }
 
     private void sendResponse(HttpExchange exchange, int status, String body) throws IOException {
+        sendResponse(exchange, status, "application/json", body);
+    }
+
+    private void sendResponse(HttpExchange exchange, int status, String contentType, String body) throws IOException {
         byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
-        exchange.getResponseHeaders().set("Content-Type", "application/json");
+        exchange.getResponseHeaders().set("Content-Type", contentType);
         exchange.sendResponseHeaders(status, bytes.length);
         try (OutputStream out = exchange.getResponseBody()) {
             out.write(bytes);
