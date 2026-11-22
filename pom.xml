@@ -107,6 +107,13 @@
       <version>5.9.3</version>
       <scope>test</scope>
     </dependency>
+    <!-- The tests make a throw-away certificate authority and certificates for mutual TLS. -->
+    <dependency>
+      <groupId>org.bouncycastle</groupId>
+      <artifactId>bcpkix-jdk18on</artifactId>
+      <version>1.79</version>
+      <scope>test</scope>
+    </dependency>
     <dependency>
       <groupId>org.junit.jupiter</groupId>
       <artifactId>junit-jupiter-engine</artifactId>

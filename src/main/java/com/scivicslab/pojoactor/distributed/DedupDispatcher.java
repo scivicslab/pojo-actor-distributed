@@ -122,12 +122,17 @@ public class DedupDispatcher implements Dispatcher {
     // Serialised so that two copies arriving together cannot both pass the check. The wrapped
     // dispatcher only puts the call in a mailbox, so the lock is held briefly.
     @Override
-    public synchronized Dispatch dispatch(ActorMessage message) {
+    public Dispatch dispatch(ActorMessage message) {
+        return dispatch(message, CallerIdentity.NONE);
+    }
+
+    @Override
+    public synchronized Dispatch dispatch(ActorMessage message, CallerIdentity caller) {
         if (!recover()) {
             return Dispatch.unavailable(UNAVAILABLE_REASON);
         }
-        if (!inner.permits(message)) {
-            return inner.dispatch(message);
+        if (!inner.permits(message, caller)) {
+            return inner.dispatch(message, caller);
         }
         String id = keyOf(message);
         String call = message.getMessageId() + " (" + message.getActorName() + "/" + message.getActionName() + ")";
@@ -156,7 +161,7 @@ public class DedupDispatcher implements Dispatcher {
             return Dispatch.unavailable(FULL_REASON);
         }
         full = false;
-        Dispatch dispatch = inner.dispatch(message);
+        Dispatch dispatch = inner.dispatch(message, caller);
         if (dispatch.accepted()) {
             try {
                 seen.add(id);
@@ -178,6 +183,16 @@ public class DedupDispatcher implements Dispatcher {
      * @return true when the dispatcher is available (calls are taken); false while the store
      *         still fails or it is too soon to try it again
      */
+    @Override
+    public boolean permits(ActorMessage message, CallerIdentity caller) {
+        return inner.permits(message, caller);
+    }
+
+    @Override
+    public boolean permits(ActorMessage message) {
+        return inner.permits(message);
+    }
+
     @Override
     public synchronized boolean recover() {
         if (unreadId == null && pending.isEmpty()) {

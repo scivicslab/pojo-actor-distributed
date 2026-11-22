@@ -42,31 +42,53 @@ public class AllowListDispatcher implements Dispatcher {
     private static final Logger logger = Logger.getLogger(AllowListDispatcher.class.getName());
 
     private final ActorSystem actorSystem;
-    private final Set<AllowedAction> allowed;
+    private final CallPolicy policy;
 
     /**
      * @param actorSystem the local actor system that holds the actors
-     * @param allowed     the (actor, action) pairs that may be called from outside
+     * @param allowed     the (actor, action) pairs that may be called from outside, by any caller
      */
     public AllowListDispatcher(ActorSystem actorSystem, Set<AllowedAction> allowed) {
-        this.actorSystem = actorSystem;
-        this.allowed = Set.copyOf(allowed);
+        this(actorSystem, CallPolicy.anyCaller(allowed));
     }
 
+    /**
+     * @param actorSystem the local actor system that holds the actors
+     * @param policy      decides, for each call, whether its caller may call that action of that actor;
+     *                    {@link CallPolicy#perCaller(java.util.Map)} lets each identity call only its own list
+     * @since 5.0.0
+     */
+    public AllowListDispatcher(ActorSystem actorSystem, CallPolicy policy) {
+        this.actorSystem = actorSystem;
+        this.policy = java.util.Objects.requireNonNull(policy, "policy");
+    }
+
+    /** Asks as for a call whose sender is not known: {@link CallerIdentity#NONE}. */
     @Override
     public boolean permits(ActorMessage message) {
-        return allowed.contains(new AllowedAction(message.getActorName(), message.getActionName()));
+        return permits(message, CallerIdentity.NONE);
     }
 
     @Override
+    public boolean permits(ActorMessage message, CallerIdentity caller) {
+        return policy.allows(caller, message.getActorName(), message.getActionName());
+    }
+
+    /** Checks the call as one whose sender is not known: {@link CallerIdentity#NONE}. */
+    @Override
     public Dispatch dispatch(ActorMessage message) {
+        return dispatch(message, CallerIdentity.NONE);
+    }
+
+    @Override
+    public Dispatch dispatch(ActorMessage message, CallerIdentity caller) {
         String actorName = message.getActorName();
         String actionName = message.getActionName();
         String args = message.getArgs();
-        ActorRef<?> ref = allowed.contains(new AllowedAction(actorName, actionName))
+        ActorRef<?> ref = policy.allows(caller, actorName, actionName)
                 ? actorSystem.getActor(actorName) : null;
         if (ref == null) {
-            logger.warning("Refused call from outside: " + actorName + "/" + actionName);
+            logger.warning("Refused call from outside: " + actorName + "/" + actionName + " from " + caller);
             return Dispatch.refused("Not allowed: " + actorName + "/" + actionName);
         }
         // An actor whose message loop has died (an Error in an action ends it) stays registered,
