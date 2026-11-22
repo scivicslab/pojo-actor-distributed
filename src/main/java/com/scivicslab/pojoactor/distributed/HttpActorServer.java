@@ -54,8 +54,19 @@ import java.util.logging.Logger;
  * Both answer, when the dispatcher cannot take calls for the moment (the message-id store cannot
  * record):
  *   503 message id store unavailable       (text/plain) not run; send it again later
+ *
  * </pre>
  * The body of both is an {@link ActorMessage} as JSON. The actor name may contain slashes.
+ *
+ * <h2>Who can reach it</h2>
+ * <p>The server has no TLS and no authentication. Whatever the dispatcher allows can be called by
+ * anything that can open a connection to the port, and what travels (actions, arguments, results)
+ * is readable on the network. So it listens on {@code 127.0.0.1} unless the program names another
+ * address: {@link #HttpActorServer(Dispatcher, int)} and a {@code null} address both mean the
+ * loopback address, and {@link #ALL_INTERFACES} or any other address is a choice the program makes
+ * for nodes that must reach each other. A server bound to an address other than the loopback one
+ * logs a warning at start-up saying so. Put such a port inside a network only those nodes can
+ * reach, or behind something that provides TLS and authentication.</p>
  *
  * <h2>Lifecycle</h2>
  * <pre>{@code
@@ -77,37 +88,47 @@ public class HttpActorServer implements AutoCloseable {
     private static final String SEND = "/send";
     private static final long INVOKE_WAIT_SECONDS = 300;
 
+    /** The address the server listens on unless the program names another. */
+    private static final String LOOPBACK = "127.0.0.1";
+
+    /** The address that listens on every interface; see {@link #HttpActorServer(Dispatcher, String, int)}. */
+    public static final String ALL_INTERFACES = "0.0.0.0";
+
     private final Dispatcher dispatcher;
     private final String bindAddress;
     private final int port;
     private HttpServer httpServer;
 
     /**
-     * Creates an HttpActorServer that listens on every interface.
+     * Creates an HttpActorServer that listens on {@code 127.0.0.1}, callable from this machine only.
      *
-     * <p>Whatever the dispatcher allows becomes callable by anything that can reach this
-     * port. Use {@link #HttpActorServer(Dispatcher, String, int)} with {@code "127.0.0.1"}
-     * when the caller is on the same machine, and only choose this one when the callers are
-     * genuinely other hosts — a cluster of nodes that must reach each other.
+     * <p>Use {@link #HttpActorServer(Dispatcher, String, int)} with {@link #ALL_INTERFACES} or a
+     * host's address when the callers are other hosts. The server has no TLS and no
+     * authentication; see the class description.</p>
      *
      * @param dispatcher decides what may be called and runs it through the actor's mailbox
      * @param port       the port to listen on
      */
     public HttpActorServer(Dispatcher dispatcher, int port) {
-        this(dispatcher, null, port);
+        this(dispatcher, LOOPBACK, port);
     }
 
     /**
      * Creates an HttpActorServer that listens on one address.
      *
+     * <p>An address other than the loopback one makes every action the dispatcher allows callable
+     * by whatever can reach that address, with no TLS and no authentication. {@link #start()}
+     * logs a warning saying so.</p>
+     *
      * @param dispatcher  decides what may be called and runs it through the actor's mailbox
-     * @param bindAddress the address to listen on, e.g. {@code "127.0.0.1"} to accept only
-     *                    callers on this machine; {@code null} listens on every interface
+     * @param bindAddress the address to listen on: {@code "127.0.0.1"} accepts only callers on this
+     *                    machine, {@link #ALL_INTERFACES} accepts callers on every interface;
+     *                    {@code null} means {@code "127.0.0.1"}
      * @param port        the port to listen on
      */
     public HttpActorServer(Dispatcher dispatcher, String bindAddress, int port) {
         this.dispatcher = dispatcher;
-        this.bindAddress = bindAddress;
+        this.bindAddress = bindAddress == null ? LOOPBACK : bindAddress;
         this.port = port;
     }
 
@@ -121,15 +142,20 @@ public class HttpActorServer implements AutoCloseable {
      * @throws IOException if the server cannot bind to the address and port
      */
     public synchronized void start() throws IOException {
-        InetSocketAddress address = (bindAddress == null)
-                ? new InetSocketAddress(port)                 // every interface
-                : new InetSocketAddress(bindAddress, port);
+        InetSocketAddress address = new InetSocketAddress(bindAddress, port);
         httpServer = HttpServer.create(address, 0);
         httpServer.createContext(CONTEXT_PREFIX, this::handleRequest);
         httpServer.createContext("/health", this::handleHealth);
         httpServer.setExecutor(Executors.newVirtualThreadPerTaskExecutor());
         httpServer.start();
         logger.info("HttpActorServer started on " + address.getAddress().getHostAddress() + ":" + port);
+        if (!address.getAddress().isLoopbackAddress()) {
+            logger.warning("HttpActorServer listens on " + address.getAddress().getHostAddress() + ":" + port
+                    + ", which other hosts can reach. There is no TLS and no authentication: anything that"
+                    + " reaches this port can call every action the dispatcher allows, and what travels is"
+                    + " readable on the network. Listen on 127.0.0.1 unless the callers are nodes on a"
+                    + " network only they can reach.");
+        }
     }
 
     @Override

@@ -83,8 +83,8 @@ public class DistributedIIActorSystem extends IIActorSystem implements AutoClose
     }
 
     /**
-     * Starts an {@link HttpActorServer} on every interface. Whatever the allow-list names becomes
-     * callable by anything that can reach the port; see {@link #startHttpServer(String, int)}.
+     * Starts an {@link HttpActorServer} on {@code 127.0.0.1}, callable from this machine only.
+     * Nodes on other hosts cannot reach it; see {@link #startHttpServer(String, int)} for them.
      *
      * @param port the port to listen on (should match {@code getMyNode().getPort()})
      * @throws IOException if the port cannot be bound
@@ -96,10 +96,12 @@ public class DistributedIIActorSystem extends IIActorSystem implements AutoClose
     /**
      * Starts an {@link HttpActorServer} on one address.
      *
-     * <p>Pass {@code "127.0.0.1"} when the callers are on this machine, and leave it open only
-     * when they are other hosts. What may be called is decided by the allow-list alone.</p>
+     * <p>Pass {@link HttpActorServer#ALL_INTERFACES} or a host's address only when the callers are
+     * nodes on other hosts. The server has no TLS and no authentication, so whatever the allow-list
+     * names becomes callable by anything that can reach that address, and the server logs a warning
+     * saying so at start-up. What may be called is decided by the allow-list alone.</p>
      *
-     * @param bindAddress the address to listen on; {@code null} listens on every interface
+     * @param bindAddress the address to listen on; {@code null} means {@code "127.0.0.1"}
      * @param port        the port to listen on (should match {@code getMyNode().getPort()})
      * @throws IOException if the address and port cannot be bound
      */

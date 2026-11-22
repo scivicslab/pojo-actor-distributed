@@ -27,6 +27,7 @@ import com.scivicslab.pojoactor.core.ActorSystem;
  * one arriving on another interface does not.
  */
 @Tag("WorkflowTab_BindAddress_260906_oo01")
+@Tag("HttpActorServerBinding_261123_oo01")
 @DisplayName("HttpActorServer — the addresses it accepts callers from")
 class HttpActorServerBindAddressTest {
 
@@ -95,21 +96,115 @@ class HttpActorServerBindAddressTest {
         }
     }
 
-    /** The existing constructor keeps listening everywhere: a cluster of hosts needs that. */
+    /**
+     * The default is this machine alone. The server has no TLS and no authentication, so listening
+     * on a LAN address is something a program asks for by name, never something it gets by leaving
+     * the address out.
+     */
     @Test
-    void withoutABindAddress_listensOnEveryInterface() throws Exception {
+    void withoutABindAddress_listensOnLoopbackOnly() throws Exception {
         InetAddress lan = nonLoopbackAddress();
         Assumptions.assumeTrue(lan != null, "no non-loopback IPv4 address on this machine");
 
-        ActorSystem system = new ActorSystem("bind-wildcard");
+        ActorSystem system = new ActorSystem("bind-default");
         int port = freePort();
         try (HttpActorServer server = new HttpActorServer(new AllowListDispatcher(system, java.util.Set.of()), port)) {
             server.start();
 
-            assertTrue(canConnect(InetAddress.getByName("127.0.0.1"), port));
-            assertTrue(canConnect(lan, port), "reachable on " + lan.getHostAddress());
+            assertTrue(canConnect(InetAddress.getByName("127.0.0.1"), port), "reachable on loopback");
+            assertFalse(canConnect(lan, port), "must not be reachable on " + lan.getHostAddress());
         } finally {
             system.terminate();
+        }
+    }
+
+    @Test
+    void aNullBindAddress_isTheLoopbackDefaultToo() throws Exception {
+        InetAddress lan = nonLoopbackAddress();
+        Assumptions.assumeTrue(lan != null, "no non-loopback IPv4 address on this machine");
+
+        ActorSystem system = new ActorSystem("bind-null");
+        int port = freePort();
+        try (HttpActorServer server = new HttpActorServer(new AllowListDispatcher(system, java.util.Set.of()), null, port)) {
+            server.start();
+
+            assertTrue(canConnect(InetAddress.getByName("127.0.0.1"), port));
+            assertFalse(canConnect(lan, port), "null must not mean every interface");
+        } finally {
+            system.terminate();
+        }
+    }
+
+    /** Hosts that must reach each other ask for it with an address; the server then says what that costs. */
+    @Test
+    void anExplicitNonLoopbackAddress_listensThereAndWarnsThatThereIsNoTlsAndNoAuthentication() throws Exception {
+        InetAddress lan = nonLoopbackAddress();
+        Assumptions.assumeTrue(lan != null, "no non-loopback IPv4 address on this machine");
+
+        java.util.List<java.util.logging.LogRecord> records = new java.util.concurrent.CopyOnWriteArrayList<>();
+        java.util.logging.Handler capture = new java.util.logging.Handler() {
+            @Override public void publish(java.util.logging.LogRecord r) { records.add(r); }
+            @Override public void flush() { }
+            @Override public void close() { }
+        };
+        java.util.logging.Logger log = java.util.logging.Logger.getLogger(HttpActorServer.class.getName());
+        log.addHandler(capture);
+        ActorSystem system = new ActorSystem("bind-explicit");
+        int port = freePort();
+        try (HttpActorServer server = new HttpActorServer(new AllowListDispatcher(system, java.util.Set.of()),
+                HttpActorServer.ALL_INTERFACES, port)) {
+            server.start();
+
+            assertTrue(canConnect(lan, port), "reachable on " + lan.getHostAddress());
+            String warning = records.stream()
+                    .filter(r -> r.getLevel() == java.util.logging.Level.WARNING)
+                    .map(java.util.logging.LogRecord::getMessage).findFirst().orElse("");
+            assertTrue(warning.contains("no TLS") && warning.contains("no authentication"),
+                    "the start-up warning must say there is no TLS and no authentication, was: " + warning);
+        } finally {
+            log.removeHandler(capture);
+            system.terminate();
+        }
+    }
+
+    @Test
+    void aLoopbackServer_logsNoWarning() throws Exception {
+        java.util.List<java.util.logging.LogRecord> records = new java.util.concurrent.CopyOnWriteArrayList<>();
+        java.util.logging.Handler capture = new java.util.logging.Handler() {
+            @Override public void publish(java.util.logging.LogRecord r) { records.add(r); }
+            @Override public void flush() { }
+            @Override public void close() { }
+        };
+        java.util.logging.Logger log = java.util.logging.Logger.getLogger(HttpActorServer.class.getName());
+        log.addHandler(capture);
+        ActorSystem system = new ActorSystem("bind-quiet");
+        int port = freePort();
+        try (HttpActorServer server = new HttpActorServer(new AllowListDispatcher(system, java.util.Set.of()), port)) {
+            server.start();
+
+            assertTrue(records.stream().noneMatch(r -> r.getLevel() == java.util.logging.Level.WARNING));
+        } finally {
+            log.removeHandler(capture);
+            system.terminate();
+        }
+    }
+
+    @Test
+    void distributedActorSystem_startHttpServerWithoutAnAddress_isLoopbackOnly() throws Exception {
+        InetAddress lan = nonLoopbackAddress();
+        Assumptions.assumeTrue(lan != null, "no non-loopback IPv4 address on this machine");
+
+        int port = freePort();
+        DistributedIIActorSystem system = DistributedIIActorSystem.builder().noDeduplication()
+                .discovery(new OneNodeDiscovery(port))
+                .build();
+        try {
+            system.startHttpServer(port);
+
+            assertTrue(canConnect(InetAddress.getByName("127.0.0.1"), port));
+            assertFalse(canConnect(lan, port), "must not be reachable on " + lan.getHostAddress());
+        } finally {
+            system.close();
         }
     }
 
