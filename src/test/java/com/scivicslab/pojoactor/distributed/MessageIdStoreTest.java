@@ -1,9 +1,11 @@
 package com.scivicslab.pojoactor.distributed;
 
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Clock;
@@ -15,6 +17,7 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.*;
 
 /** The memory of seen message ids: bounded by count and by age, and the file one survives a restart. */
+@Tag("DistributedActorSystemRedesign_261115_oo01")
 class MessageIdStoreTest {
 
     /** A clock the test moves by hand. */
@@ -135,5 +138,40 @@ class MessageIdStoreTest {
         }
         long lines = Files.readAllLines(file).size();
         assertTrue(lines <= 20, "file has " + lines + " lines for a window of 5");
+    }
+
+    /**
+     * A rewrite of the file that fails (here: a directory stands where the rewrite writes its
+     * temporary copy) must not leave the store unable to record for good: once the disk works
+     * again, {@code add} works again and nothing remembered is lost.
+     */
+    @Test
+    void fileStore_afterARewriteThatFailed_recordsAgainOnceTheDiskWorks(@TempDir Path dir) throws IOException {
+        Path file = dir.resolve("ids.log");
+        Path tmp = dir.resolve("ids.log.tmp");
+        String failedId = null;
+        try (FileMessageIdStore store = new FileMessageIdStore(file, 2, Duration.ofHours(1))) {
+            Files.createDirectory(tmp);
+            Files.writeString(tmp.resolve("blocker"), "x");
+            for (int i = 0; i < 100 && failedId == null; i++) {
+                try {
+                    store.add("id-" + i);
+                } catch (UncheckedIOException e) {
+                    failedId = "id-" + i;
+                }
+            }
+            assertNotNull(failedId, "the rewrite never failed");
+
+            Files.delete(tmp.resolve("blocker"));
+            Files.delete(tmp);
+            store.add("after");
+
+            assertTrue(store.contains("after"));
+            assertTrue(store.contains(failedId), "the id appended before the failed rewrite is kept");
+        }
+        try (FileMessageIdStore reopened = new FileMessageIdStore(file, 2, Duration.ofHours(1))) {
+            assertTrue(reopened.contains("after"));
+            assertTrue(reopened.contains(failedId));
+        }
     }
 }

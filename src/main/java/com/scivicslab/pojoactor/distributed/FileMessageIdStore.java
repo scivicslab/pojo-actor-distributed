@@ -21,6 +21,7 @@ import java.io.UncheckedIOException;
 import java.net.URLDecoder;
 import java.net.URLEncoder;
 import java.nio.ByteBuffer;
+import java.nio.channels.ClosedChannelException;
 import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -40,6 +41,9 @@ import java.util.logging.Logger;
  *
  * <p>A line is {@code epochMillis TAB url-encoded-id}. A line that cannot be read, such as a
  * torn last line after a crash, is skipped.</p>
+ *
+ * <p>When the disk fails, {@link #add} throws, and it works again as soon as the disk does: a
+ * failed rewrite of the file leaves the file as it was and is tried again on a later add.</p>
  */
 public class FileMessageIdStore implements MessageIdStore, AutoCloseable {
 
@@ -49,7 +53,8 @@ public class FileMessageIdStore implements MessageIdStore, AutoCloseable {
     private final int maxEntries;
     private final Clock clock;
     private final InMemoryMessageIdStore memory;
-    private FileChannel out;
+    private FileChannel out;     // null after a rewrite that failed: reopened by the next append
+    private boolean closed;
     private int linesInFile;
 
     /**
@@ -96,7 +101,8 @@ public class FileMessageIdStore implements MessageIdStore, AutoCloseable {
     @Override
     public synchronized void close() {
         try {
-            if (out != null) out.close();
+            closed = true;
+            closeOut();
         } catch (IOException e) {
             logger.warning("Could not close " + file + ": " + e.getMessage());
         }
@@ -117,9 +123,11 @@ public class FileMessageIdStore implements MessageIdStore, AutoCloseable {
         }
     }
 
-    // Rewrites the file with only what is still remembered, then reopens it for appending.
+    // Rewrites the file with only what is still remembered, then reopens it for appending. If the
+    // rewrite fails, out is left null and the next append reopens the file as it is, so a failed
+    // rewrite does not stop the store from recording; the rewrite is tried again on a later add.
     private void compact() throws IOException {
-        if (out != null) out.close();
+        closeOut();
         Path tmp = file.resolveSibling(file.getFileName() + ".tmp");
         StringBuilder sb = new StringBuilder();
         int n = 0;
@@ -130,10 +138,22 @@ public class FileMessageIdStore implements MessageIdStore, AutoCloseable {
         Files.writeString(tmp, sb.toString(), StandardCharsets.UTF_8);
         Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
         linesInFile = n;
-        out = FileChannel.open(file, StandardOpenOption.CREATE, StandardOpenOption.WRITE, StandardOpenOption.APPEND);
+        out = openForAppend();
+    }
+
+    private FileChannel openForAppend() throws IOException {
+        return FileChannel.open(file, StandardOpenOption.CREATE, StandardOpenOption.WRITE, StandardOpenOption.APPEND);
+    }
+
+    private void closeOut() throws IOException {
+        FileChannel channel = out;
+        out = null;
+        if (channel != null) channel.close();
     }
 
     private void append(long millis, String id) throws IOException {
+        if (closed) throw new ClosedChannelException();
+        if (out == null) out = openForAppend();
         byte[] line = (millis + "\t" + encode(id) + "\n").getBytes(StandardCharsets.UTF_8);
         ByteBuffer buf = ByteBuffer.wrap(line);
         while (buf.hasRemaining()) out.write(buf);
