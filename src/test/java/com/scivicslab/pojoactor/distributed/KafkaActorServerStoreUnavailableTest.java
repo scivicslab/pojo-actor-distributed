@@ -90,4 +90,41 @@ class KafkaActorServerStoreUnavailableTest {
         assertTrue(store.contains(ActorMessage.fromJson(a).getMessageId()));
         assertTrue(store.contains(ActorMessage.fromJson(b).getMessageId()));
     }
+
+    @Test
+    void aStoreThatCannotBeRead_pausesTheInbox_untilItCanBeReadAgain() {
+        consumer.assign(List.of(tp));
+        consumer.updateBeginningOffsets(Map.of(tp, 0L));
+        BreakableMessageIdStore store = new BreakableMessageIdStore();
+        MessageIdStoreTest.FakeClock clock = new MessageIdStoreTest.FakeClock();
+        Dispatcher running = m -> {
+            events.add("run:" + m.getActionName());
+            return new Dispatcher.Dispatch(true, CompletableFuture.completedFuture(new ActionResult(true, "ok")));
+        };
+        KafkaActorServer server = new KafkaActorServer(new DedupDispatcher(running, store, clock), me, consumer);
+        String a = new ActorMessage("worker", "a", "").toJson();
+
+        // a cannot be checked against the store: it is not run and its position is not recorded.
+        store.containsBroken = true;
+        addRecord(0, a);
+        server.pollOnce(Duration.ZERO);
+
+        assertEquals(List.of(), events);
+        assertEquals(0L, consumer.position(tp), "the consumer goes back to a");
+        assertEquals(Set.of(tp), consumer.paused());
+
+        // Paused: the broker's copy of a is held, not read.
+        addRecord(0, a);
+        server.pollOnce(Duration.ZERO);
+        assertEquals(List.of(), events, "nothing runs while paused");
+        assertEquals(Set.of(tp), consumer.paused());
+
+        // The store can be read again: the inbox is resumed, a runs once and is recorded.
+        store.containsBroken = false;
+        clock.advance(Duration.ofSeconds(1));
+        server.pollOnce(Duration.ZERO);
+
+        assertEquals(Set.of(), consumer.paused());
+        assertEquals(List.of("run:a", "commit:1"), events);
+    }
 }

@@ -70,3 +70,11 @@ re-running the same action. Build pod `mvn-c83` (ubuntu:24.04 + GraalVM CE 25). 
       turn probes `recover()` and resumes when it is available. Javadoc: tested only against MockConsumer
 - [x] `FileMessageIdStore`: a failed `compact()` leaves no closed channel; the next `add` reopens the file
 - [x] Full `mvn test` green after `rm -rf target` (140 run, 0 failures, 0 errors, 0 skipped); commit (store), commit (receivers)
+- [x] Follow-up (chat-57's decision): a `seen.contains` that throws is treated like a failed add: UNAVAILABLE
+      (HTTP 503, Kafka pauses and probes), nothing dispatched, same backoff; no pending id, the next due try
+      reads the store again. Failing tests first (one per receiver and one for the dispatcher)
+
+### Follow-up, not in this job
+- [ ] `HttpTransport.parseResponse` (used by `sendAndWait`) should report an answer that is not JSON, or not
+      2xx, as `HTTP <status>: <body>`; today a 503 `message id store unavailable` reads as
+      `Failed to parse response`. The sender is not changed in audit item 18 (chat-57's decision).

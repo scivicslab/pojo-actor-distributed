@@ -94,4 +94,31 @@ class DedupDispatcherStoreUnavailableTest {
     void recover_withNothingPending_isTrue() {
         assertTrue(dedup.recover());
     }
+
+    /** A store that cannot be read cannot tell a copy from a new message either: nothing runs. */
+    @Test
+    void dispatch_whenTheStoreCannotBeRead_takesNoCall_untilItCanBeReadAgain() {
+        store.containsBroken = true;
+
+        Dispatcher.Dispatch first = dedup.dispatch(msg("m1"));
+        Dispatcher.Dispatch second = dedup.dispatch(msg("m2"));
+
+        assertTrue(first.unavailable(), "outcome " + first.outcome());
+        assertEquals("message id store unavailable", first.result().join().getResult());
+        assertTrue(second.unavailable(), "outcome " + second.outcome());
+        assertEquals(1, store.containsAttempts.get(), "the store is not read again before the backoff");
+        assertFalse(dedup.recover());
+
+        clock.advance(Duration.ofSeconds(1));
+        assertFalse(dedup.recover(), "still cannot be read");
+        assertEquals(2, store.containsAttempts.get());
+
+        store.containsBroken = false;
+        clock.advance(Duration.ofSeconds(2));
+        Dispatcher.Dispatch after = dedup.dispatch(msg("m1"));
+
+        assertTrue(after.accepted(), "outcome " + after.outcome());
+        assertEquals(List.of("m1"), reached, "m1 ran once, after the store could be read");
+        assertEquals(1, store.addAttempts.get(), "only m1 was recorded: nothing was pending");
+    }
 }

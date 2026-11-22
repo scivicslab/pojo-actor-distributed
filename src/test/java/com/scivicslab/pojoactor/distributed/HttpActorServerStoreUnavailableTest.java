@@ -88,4 +88,40 @@ class HttpActorServerStoreUnavailableTest {
             system.terminate();
         }
     }
+
+    @Test
+    void sendAndInvoke_whileTheStoreCannotBeRead_answer503AndRunNothing() throws Exception {
+        ActorSystem system = new ActorSystem("test");
+        Recorder recorder = new Recorder();
+        system.actorOf("recorder", recorder);
+        BreakableMessageIdStore store = new BreakableMessageIdStore();
+        MessageIdStoreTest.FakeClock clock = new MessageIdStoreTest.FakeClock();
+        Dispatcher dispatcher = new DedupDispatcher(new AllowListDispatcher(system,
+                Set.of(new AllowListDispatcher.AllowedAction("recorder", "run"))), store, clock);
+
+        try (HttpActorServer server = new HttpActorServer(dispatcher, "127.0.0.1", PORT)) {
+            server.start();
+            store.containsBroken = true;
+
+            HttpResponse<String> invoke = post("invoke", "m1");
+            assertEquals(503, invoke.statusCode(), invoke.body());
+            assertEquals("message id store unavailable", invoke.body());
+
+            HttpResponse<String> send = post("send", "m2");
+            assertEquals(503, send.statusCode(), send.body());
+            assertEquals("message id store unavailable", send.body());
+
+            store.containsBroken = false;
+            clock.advance(Duration.ofSeconds(1));
+
+            HttpResponse<String> after = post("invoke", "m3");
+            assertEquals(200, after.statusCode(), after.body());
+            assertTrue(after.body().contains("ran m3"), after.body());
+
+            // m3 ran after anything put in the mailbox before it, so m1 and m2 would show here.
+            assertEquals(List.of("m3"), recorder.runs);
+        } finally {
+            system.terminate();
+        }
+    }
 }

@@ -40,18 +40,25 @@ import java.util.logging.Logger;
  * dies between the two may run the message a second time after it restarts: delivery is at
  * least once, and this only removes the duplicates that a running receiver can see.</p>
  *
- * <h2>When the store cannot record</h2>
+ * <h2>When the store fails</h2>
  * <p>If {@link MessageIdStore#add} throws, the message was already accepted and will run, so it
  * keeps its accepted outcome; the failure is logged as SEVERE. Its id is kept here, in memory, as
  * pending, and the dispatcher becomes unavailable: a resend of that message could not be told
- * apart from a new one, and every copy would run the action again. While a pending id is kept,
- * {@link #dispatch} puts nothing in a mailbox. Each call (and each {@link #recover}) first tries
- * to record the pending ids again, but no sooner than the backoff allows: 1 s after the failure,
- * then 2, 4, 8 and 16 s, then every 30 s. When every pending id is recorded the dispatcher is
- * available again and the call goes on as usual; otherwise the call gets
- * {@link Dispatch.Outcome#UNAVAILABLE} with the reason {@value #UNAVAILABLE_REASON}. Pending ids
- * live only in memory: a receiver that is stopped while some are pending may run those messages
- * again after it restarts, as for any message accepted just before a crash.</p>
+ * apart from a new one, and every copy would run the action again.</p>
+ *
+ * <p>If {@link MessageIdStore#contains} throws, the dispatcher cannot tell a copy from a new
+ * message either. Nothing was accepted, so nothing is pending: the call gets
+ * {@link Dispatch.Outcome#UNAVAILABLE} and the dispatcher becomes unavailable until the store can
+ * be read again. The id of that call is kept only to ask the store about it on the next try.</p>
+ *
+ * <p>While unavailable, {@link #dispatch} puts nothing in a mailbox. Each call (and each
+ * {@link #recover}) first tries the store again, but no sooner than the backoff allows: 1 s after
+ * the failure, then 2, 4, 8 and 16 s, then every 30 s. A try reads the store if a read failed and
+ * records every pending id. When it succeeds the dispatcher is available again and the call goes
+ * on as usual; otherwise the call gets {@link Dispatch.Outcome#UNAVAILABLE} with the reason
+ * {@value #UNAVAILABLE_REASON}. Pending ids live only in memory: a receiver that is stopped while
+ * some are pending may run those messages again after it restarts, as for any message accepted
+ * just before a crash.</p>
  */
 public class DedupDispatcher implements Dispatcher {
 
@@ -72,6 +79,8 @@ public class DedupDispatcher implements Dispatcher {
 
     // Accepted, but not yet recorded in the store, in the order they were accepted.
     private final Set<String> pending = new LinkedHashSet<>();
+    // The id whose check against the store failed; null when the store could be read.
+    private String unreadId;
     private Duration wait = FIRST_RETRY;
     private long nextTryMillis;
 
@@ -94,9 +103,20 @@ public class DedupDispatcher implements Dispatcher {
             return Dispatch.unavailable(UNAVAILABLE_REASON);
         }
         String id = message.getMessageId();
-        if (seen.contains(id)) {
-            logger.info("Dropping duplicate message " + id + " for " + message.getActorName()
-                    + "/" + message.getActionName());
+        String call = id + " (" + message.getActorName() + "/" + message.getActionName() + ")";
+        boolean duplicate;
+        try {
+            duplicate = seen.contains(id);
+        } catch (RuntimeException e) {
+            unreadId = id;
+            startBackoff();
+            logger.log(Level.SEVERE, "Could not read the message id store for message " + call
+                    + "; not taken, and taking no calls until the store can be read, next try in "
+                    + wait.toSeconds() + " s", e);
+            return Dispatch.unavailable(UNAVAILABLE_REASON);
+        }
+        if (duplicate) {
+            logger.info("Dropping duplicate message " + call);
             return new Dispatch(true, CompletableFuture.completedFuture(
                     new ActionResult(false, "Duplicate message " + id + " ignored")));
         }
@@ -106,48 +126,56 @@ public class DedupDispatcher implements Dispatcher {
                 seen.add(id);
             } catch (RuntimeException e) {
                 pending.add(id);
-                wait = FIRST_RETRY;
-                nextTryMillis = clock.millis() + wait.toMillis();
-                logger.log(Level.SEVERE, "Could not record message id " + id + " (" + message.getActorName()
-                        + "/" + message.getActionName() + ", accepted and will run); taking no more calls"
-                        + " until the message id store records again, next try in " + wait.toSeconds() + " s", e);
+                startBackoff();
+                logger.log(Level.SEVERE, "Could not record message id " + call + ", accepted and will run;"
+                        + " taking no more calls until the message id store records again, next try in "
+                        + wait.toSeconds() + " s", e);
             }
         }
         return dispatch;
     }
 
     /**
-     * Records the pending ids if the backoff allows a try now.
+     * Tries the store again if the dispatcher is unavailable and the backoff allows a try now:
+     * reads it if a read failed, and records the pending ids.
      *
-     * @return true when nothing is pending (calls are taken); false while the store cannot record
-     *         or it is too soon to try it again
+     * @return true when the dispatcher is available (calls are taken); false while the store
+     *         still fails or it is too soon to try it again
      */
     @Override
     public synchronized boolean recover() {
-        if (pending.isEmpty()) {
+        if (unreadId == null && pending.isEmpty()) {
             return true;
         }
         long now = clock.millis();
         if (now < nextTryMillis) {
             return false;
         }
-        Iterator<String> it = pending.iterator();
-        while (it.hasNext()) {
-            String id = it.next();
-            try {
-                seen.add(id);
-                it.remove();
-            } catch (RuntimeException e) {
-                wait = min(wait.multipliedBy(2), MAX_RETRY);
-                nextTryMillis = now + wait.toMillis();
-                logger.log(Level.SEVERE, "The message id store still cannot record (" + pending.size()
-                        + " id(s) pending); taking no calls, next try in " + wait.toSeconds() + " s", e);
-                return false;
+        try {
+            if (unreadId != null) {
+                seen.contains(unreadId);
+                unreadId = null;
             }
+            Iterator<String> it = pending.iterator();
+            while (it.hasNext()) {
+                seen.add(it.next());
+                it.remove();
+            }
+        } catch (RuntimeException e) {
+            wait = min(wait.multipliedBy(2), MAX_RETRY);
+            nextTryMillis = now + wait.toMillis();
+            logger.log(Level.SEVERE, "The message id store still fails (" + (unreadId != null ? "cannot be read, " : "")
+                    + pending.size() + " id(s) pending); taking no calls, next try in " + wait.toSeconds() + " s", e);
+            return false;
         }
         wait = FIRST_RETRY;
-        logger.info("The message id store records again; taking calls");
+        logger.info("The message id store works again; taking calls");
         return true;
+    }
+
+    private void startBackoff() {
+        wait = FIRST_RETRY;
+        nextTryMillis = clock.millis() + wait.toMillis();
     }
 
     private static Duration min(Duration a, Duration b) {
