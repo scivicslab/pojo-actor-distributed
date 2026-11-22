@@ -83,7 +83,7 @@ class HttpActorServerStoreUnavailableTest {
 
             // m4 ran after anything put in the mailbox before it, so m2 and m3 would show here.
             assertEquals(List.of("m1", "m4"), recorder.runs);
-            assertTrue(store.contains("m1"), "the id that could not be recorded is recorded now");
+            assertTrue(store.containsId("m1"), "the id that could not be recorded is recorded now");
         } finally {
             system.terminate();
         }

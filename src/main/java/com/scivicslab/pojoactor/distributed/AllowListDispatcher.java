@@ -54,6 +54,11 @@ public class AllowListDispatcher implements Dispatcher {
     }
 
     @Override
+    public boolean permits(ActorMessage message) {
+        return allowed.contains(new AllowedAction(message.getActorName(), message.getActionName()));
+    }
+
+    @Override
     public Dispatch dispatch(ActorMessage message) {
         String actorName = message.getActorName();
         String actionName = message.getActionName();

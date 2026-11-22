@@ -46,6 +46,21 @@ public interface Dispatcher {
     }
 
     /**
+     * Whether this dispatcher would let the message through at all, by its actor and action. Asking does
+     * not run, enqueue or record anything.
+     *
+     * <p>A dispatcher that remembers messages ({@link DedupDispatcher}) asks this first, so that what it
+     * remembers does not change the answer for a call that is not allowed.</p>
+     *
+     * @param message the message to check
+     * @return false when {@link #dispatch} would refuse the message because it is not allowed; true
+     *         otherwise, and by default
+     */
+    default boolean permits(ActorMessage message) {
+        return true;
+    }
+
+    /**
      * Tries to become able to take calls again after {@link #dispatch} answered
      * {@link Dispatch.Outcome#UNAVAILABLE}. A receiver that has stopped reading (the Kafka
      * receiver pauses its inbox) calls this on each turn and starts reading again when it is

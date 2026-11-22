@@ -28,6 +28,11 @@ class BreakableMessageIdStore implements MessageIdStore {
         return memory.contains(messageId);
     }
 
+    /** Whether a message with this id is remembered, whatever its content: the store holds id and content digest. */
+    boolean containsId(String id) {
+        return memory.snapshot().keySet().stream().anyMatch(k -> k.startsWith(id + "#"));
+    }
+
     @Override
     public void add(String messageId) {
         addAttempts.incrementAndGet();
