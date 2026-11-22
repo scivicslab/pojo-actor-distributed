@@ -21,7 +21,7 @@ import com.scivicslab.pojoactor.distributed.RemoteActorRef;
 import com.scivicslab.pojoactor.distributed.transport.TransportLayer;
 import com.scivicslab.turingworkflow.workflow.IIActorRef;
 import com.scivicslab.turingworkflow.workflow.IIActorSystem;
-import com.scivicslab.turingworkflow.workflow.CalcActor;
+import com.scivicslab.turingworkflow.workflow.OutActor;
 
 /**
  * Standing in, inside this actor system, for an actor that lives in another process.
@@ -152,7 +152,7 @@ class RemoteActorIIARTest {
         }
     }
 
-    /** The built-in names keep their meaning: a factory must not be able to take "calc". */
+    /** The built-in names keep their meaning: a factory must not be able to take "out". */
     @Test
     void builtInNamesAreResolvedBeforeAnyFactory() {
         IIActorSystem system = new IIActorSystem("parent");
@@ -160,8 +160,8 @@ class RemoteActorIIARTest {
         try {
             system.addActorFactory(name -> proxy(name, name, transport, system));
 
-            IIActorRef<?> calc = system.getIIActor("calc");
-            assertTrue(calc instanceof CalcActor, calc.getClass().getName());
+            IIActorRef<?> out = system.getIIActor("out");
+            assertTrue(out instanceof OutActor, out.getClass().getName());
         } finally {
             system.terminate();
         }
