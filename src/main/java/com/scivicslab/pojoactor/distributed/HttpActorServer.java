@@ -27,8 +27,9 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
-import java.util.concurrent.TimeUnit;
+import java.util.Locale;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -55,8 +56,22 @@ import java.util.logging.Logger;
  * record):
  *   503 message id store unavailable       (text/plain) not run; send it again later
  *
+ * Both refuse, before the dispatcher is asked:
+ *   403 {"error":"..."}   an Origin header, or a Host that is not the loopback address on a loopback server
+ *   415 {"error":"..."}   a Content-Type other than application/json
+
  * </pre>
  * The body of both is an {@link ActorMessage} as JSON. The actor name may contain slashes.
+ *
+ * <h2>What a request must look like</h2>
+ * <p>A POST is served only when it looks like what a node sends, so that a web page in a browser on the
+ * same machine cannot make the server run an action. A browser sends a cross-origin POST without asking
+ * first when its type is {@code text/plain} or a form type, so the server requires
+ * {@code Content-Type: application/json} (415 otherwise: a JSON type makes the browser ask first, and the
+ * server never answers that question). A browser also names the page in an {@code Origin} header and a
+ * node never sends one, so a request with an {@code Origin} is refused with 403. A server on the
+ * loopback address refuses, with 403, a request whose {@code Host} is not the loopback address, which
+ * is how a page on a name rebound to 127.0.0.1 would arrive.</p>
  *
  * <h2>Who can reach it</h2>
  * <p>The server has no TLS and no authentication. Whatever the dispatcher allows can be called by
@@ -98,6 +113,8 @@ public class HttpActorServer implements AutoCloseable {
     private final String bindAddress;
     private final int port;
     private HttpServer httpServer;
+    // Set in start(): whether a Host header must name the loopback address.
+    private volatile boolean loopbackOnly;
 
     /**
      * Creates an HttpActorServer that listens on {@code 127.0.0.1}, callable from this machine only.
@@ -143,6 +160,7 @@ public class HttpActorServer implements AutoCloseable {
      */
     public synchronized void start() throws IOException {
         InetSocketAddress address = new InetSocketAddress(bindAddress, port);
+        loopbackOnly = address.getAddress().isLoopbackAddress();
         httpServer = HttpServer.create(address, 0);
         httpServer.createContext(CONTEXT_PREFIX, this::handleRequest);
         httpServer.createContext("/health", this::handleHealth);
@@ -183,6 +201,24 @@ public class HttpActorServer implements AutoCloseable {
             return;
         }
 
+        // What a browser page can send is refused before anything else is looked at.
+        if (exchange.getRequestHeaders().containsKey("Origin")) {
+            sendResponse(exchange, 403, "{\"error\":\"Cross-origin request refused\"}");
+            return;
+        }
+        if (loopbackOnly && !isLoopbackHost(exchange.getRequestHeaders().getFirst("Host"))) {
+            sendResponse(exchange, 403, "{\"error\":\"Host not accepted\"}");
+            return;
+        }
+        if (!isJson(exchange.getRequestHeaders().getFirst("Content-Type"))) {
+            sendResponse(exchange, 415, "{\"error\":\"Content-Type must be application/json\"}");
+            return;
+        }
+
+        serve(exchange);
+    }
+
+    private void serve(HttpExchange exchange) throws IOException {
         // Path: /actor/{actorName}/invoke or /actor/{actorName}/send
         String path = exchange.getRequestURI().getPath();
         boolean send = path.endsWith(SEND);
@@ -231,6 +267,28 @@ public class HttpActorServer implements AutoCloseable {
             logger.log(Level.WARNING, "Error handling actor request for " + actorName, e);
             sendResponse(exchange, 500, "{\"error\":\"Internal error\"}");
         }
+    }
+
+    /** True for {@code application/json}, with or without parameters such as a charset. */
+    static boolean isJson(String contentType) {
+        if (contentType == null) return false;
+        int semicolon = contentType.indexOf(';');
+        String type = (semicolon < 0 ? contentType : contentType.substring(0, semicolon)).trim();
+        return type.toLowerCase(Locale.ROOT).equals("application/json");
+    }
+
+    /** True when the {@code Host} header (without its port) names the loopback address of this machine. */
+    static boolean isLoopbackHost(String hostHeader) {
+        if (hostHeader == null) return false;
+        String host = hostHeader.trim().toLowerCase(Locale.ROOT);
+        if (host.startsWith("[")) {
+            int close = host.indexOf(']');
+            host = close < 0 ? host : host.substring(0, close + 1);
+        } else {
+            int colon = host.lastIndexOf(':');
+            if (colon >= 0 && host.indexOf(':') == colon) host = host.substring(0, colon);
+        }
+        return host.equals("127.0.0.1") || host.equals("localhost") || host.equals("[::1]");
     }
 
     private void sendResponse(HttpExchange exchange, int status, String body) throws IOException {
