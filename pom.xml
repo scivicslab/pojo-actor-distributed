@@ -164,4 +164,42 @@
       </plugin>
     </plugins>
   </build>
+
+  <profiles>
+    <!--
+      The Kafka integration tests (*IT.java) need a real broker. They run only when the broker's
+      address is given: -Dkafka.it.bootstrap=host:9092 (tasks/kafka-it.sh does this on W206).
+      Without the property, mvn test, verify and install run the unit tests only, as before.
+    -->
+    <profile>
+      <id>kafka-it</id>
+      <activation>
+        <property>
+          <name>kafka.it.bootstrap</name>
+        </property>
+      </activation>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-failsafe-plugin</artifactId>
+            <version>3.2.5</version>
+            <configuration>
+              <systemPropertyVariables>
+                <kafka.it.bootstrap>${kafka.it.bootstrap}</kafka.it.bootstrap>
+              </systemPropertyVariables>
+            </configuration>
+            <executions>
+              <execution>
+                <goals>
+                  <goal>integration-test</goal>
+                  <goal>verify</goal>
+                </goals>
+              </execution>
+            </executions>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+  </profiles>
 </project>

@@ -1,0 +1,48 @@
+# The build pod for the Kafka integration tests, applied by tasks/kafka-it.sh into pad-kafka-it.
+# Its ServiceAccount may only get, list and delete pods in this namespace: case D of the tests
+# deletes the broker pod kafka-0 through the Kubernetes API and waits for the new one.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kafka-it
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: kafka-it-pods
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kafka-it-pods
+subjects:
+  - kind: ServiceAccount
+    name: kafka-it
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: kafka-it-pods
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: mvn-c84
+spec:
+  serviceAccountName: kafka-it
+  restartPolicy: Never
+  activeDeadlineSeconds: 14400
+  containers:
+    - name: mvn
+      image: ubuntu:24.04
+      command: ["sleep", "14400"]
+      resources:
+        requests:
+          cpu: "1"
+          memory: "2Gi"
+        limits:
+          cpu: "4"
+          memory: "6Gi"
