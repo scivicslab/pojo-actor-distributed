@@ -29,6 +29,7 @@ import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.Locale;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -58,8 +59,9 @@ import java.util.logging.Logger;
  *
  * Both refuse, before the dispatcher is asked:
  *   403 {"error":"..."}   an Origin header, or a Host that is not the loopback address on a loopback server
+ *   413 {"error":"..."}   a body over the limit
  *   415 {"error":"..."}   a Content-Type other than application/json
-
+ *   429 {"error":"..."}   too many requests in flight
  * </pre>
  * The body of both is an {@link ActorMessage} as JSON. The actor name may contain slashes.
  *
@@ -72,6 +74,14 @@ import java.util.logging.Logger;
  * node never sends one, so a request with an {@code Origin} is refused with 403. A server on the
  * loopback address refuses, with 403, a request whose {@code Host} is not the loopback address, which
  * is how a page on a name rebound to 127.0.0.1 would arrive.</p>
+ *
+ * <h2>Limits</h2>
+ * <p>A body larger than {@link #setMaxBodyBytes} (default {@value #DEFAULT_MAX_BODY_BYTES} bytes) is
+ * refused with 413, from the declared length before any of it is read, or from the bytes received when
+ * the body is chunked. At most {@link #setMaxConcurrentRequests} requests (default
+ * {@value #DEFAULT_MAX_CONCURRENT_REQUESTS}) are served at once; the next gets 429 and may be sent again
+ * later. Each request holds one virtual thread, and an {@code /invoke} holds it until the action ends, up
+ * to {@value #INVOKE_WAIT_SECONDS} s.</p>
  *
  * <h2>Who can reach it</h2>
  * <p>The server has no TLS and no authentication. Whatever the dispatcher allows can be called by
@@ -103,6 +113,12 @@ public class HttpActorServer implements AutoCloseable {
     private static final String SEND = "/send";
     private static final long INVOKE_WAIT_SECONDS = 300;
 
+    /** The default of {@link #setMaxBodyBytes}: 1 MiB. */
+    public static final long DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
+
+    /** The default of {@link #setMaxConcurrentRequests}. */
+    public static final int DEFAULT_MAX_CONCURRENT_REQUESTS = 256;
+
     /** The address the server listens on unless the program names another. */
     private static final String LOOPBACK = "127.0.0.1";
 
@@ -113,6 +129,8 @@ public class HttpActorServer implements AutoCloseable {
     private final String bindAddress;
     private final int port;
     private HttpServer httpServer;
+    private volatile long maxBodyBytes = DEFAULT_MAX_BODY_BYTES;
+    private volatile Semaphore inFlight = new Semaphore(DEFAULT_MAX_CONCURRENT_REQUESTS);
     // Set in start(): whether a Host header must name the loopback address.
     private volatile boolean loopbackOnly;
 
@@ -147,6 +165,31 @@ public class HttpActorServer implements AutoCloseable {
         this.dispatcher = dispatcher;
         this.bindAddress = bindAddress == null ? LOOPBACK : bindAddress;
         this.port = port;
+    }
+
+    /**
+     * Sets the largest request body the server reads; a larger one gets 413. Takes effect for the
+     * requests that arrive after the call.
+     *
+     * @param maxBodyBytes the limit in bytes; must be positive
+     */
+    public void setMaxBodyBytes(long maxBodyBytes) {
+        if (maxBodyBytes <= 0) {
+            throw new IllegalArgumentException("maxBodyBytes must be positive: " + maxBodyBytes);
+        }
+        this.maxBodyBytes = maxBodyBytes;
+    }
+
+    /**
+     * Sets how many requests are served at once; the next gets 429. Call it before {@link #start()}.
+     *
+     * @param maxConcurrentRequests the limit; must be positive
+     */
+    public void setMaxConcurrentRequests(int maxConcurrentRequests) {
+        if (maxConcurrentRequests <= 0) {
+            throw new IllegalArgumentException("maxConcurrentRequests must be positive: " + maxConcurrentRequests);
+        }
+        this.inFlight = new Semaphore(maxConcurrentRequests);
     }
 
     /**
@@ -215,7 +258,17 @@ public class HttpActorServer implements AutoCloseable {
             return;
         }
 
-        serve(exchange);
+        Semaphore slots = inFlight;
+        if (!slots.tryAcquire()) {
+            exchange.getResponseHeaders().set("Retry-After", "1");
+            sendResponse(exchange, 429, "{\"error\":\"Too many requests\"}");
+            return;
+        }
+        try {
+            serve(exchange);
+        } finally {
+            slots.release();
+        }
     }
 
     private void serve(HttpExchange exchange) throws IOException {
@@ -228,8 +281,20 @@ public class HttpActorServer implements AutoCloseable {
             return;
         }
 
+        long limit = maxBodyBytes;
+        String declared = exchange.getRequestHeaders().getFirst("Content-Length");
+        if (declared != null && parseLength(declared) > limit) {
+            tooLarge(exchange);
+            return;
+        }
+
         try (InputStream body = exchange.getRequestBody()) {
-            String json = new String(body.readAllBytes(), StandardCharsets.UTF_8);
+            byte[] bytes = body.readNBytes((int) Math.min(limit + 1, Integer.MAX_VALUE - 8));
+            if (bytes.length > limit) {
+                tooLarge(exchange);
+                return;
+            }
+            String json = new String(bytes, StandardCharsets.UTF_8);
             ActorMessage message = ActorMessage.fromJson(json);
             if (message == null) {
                 sendResponse(exchange, 400, "{\"error\":\"Invalid message\"}");
@@ -266,6 +331,20 @@ public class HttpActorServer implements AutoCloseable {
         } catch (Exception e) {
             logger.log(Level.WARNING, "Error handling actor request for " + actorName, e);
             sendResponse(exchange, 500, "{\"error\":\"Internal error\"}");
+        }
+    }
+
+    // The body is not read: the connection is closed after the answer, so the rest is never taken in.
+    private void tooLarge(HttpExchange exchange) throws IOException {
+        exchange.getResponseHeaders().set("Connection", "close");
+        sendResponse(exchange, 413, "{\"error\":\"Request too large\"}");
+    }
+
+    private static long parseLength(String declared) {
+        try {
+            return Long.parseLong(declared.trim());
+        } catch (NumberFormatException e) {
+            return Long.MAX_VALUE;
         }
     }
 

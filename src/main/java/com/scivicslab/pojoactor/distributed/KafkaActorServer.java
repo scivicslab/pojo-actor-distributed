@@ -88,6 +88,7 @@ public class KafkaActorServer implements AutoCloseable {
     private final Dispatcher dispatcher;
     private final NodeInfo myNode;
     private final Consumer<String, String> consumer;
+    private volatile int maxMessageChars = (int) HttpActorServer.DEFAULT_MAX_BODY_BYTES;
     private volatile boolean running = false;
     private Thread serverThread;
 
@@ -114,6 +115,19 @@ public class KafkaActorServer implements AutoCloseable {
      * Starts the inbox consumer loop in a virtual thread.
      * Safe to call only once.
      */
+    /**
+     * Sets the longest message, in characters, that is read from the inbox; a longer one is skipped and
+     * logged by its length only. The default is {@link HttpActorServer#DEFAULT_MAX_BODY_BYTES}.
+     *
+     * @param maxMessageChars the limit; must be positive
+     */
+    public void setMaxMessageChars(int maxMessageChars) {
+        if (maxMessageChars <= 0) {
+            throw new IllegalArgumentException("maxMessageChars must be positive: " + maxMessageChars);
+        }
+        this.maxMessageChars = maxMessageChars;
+    }
+
     public synchronized void start() {
         if (running) return;
         running = true;
@@ -254,6 +268,12 @@ public class KafkaActorServer implements AutoCloseable {
     // Returns true when the message needs no second try (taken, refused, or unparseable), false
     // when the dispatcher cannot take calls for the moment. Throws when handing over failed.
     private boolean handOver(String json) {
+        if (json != null && json.length() > maxMessageChars) {
+            // Neither parsed nor logged: a record this size is not a message a node sends.
+            logger.warning("Skipping a message of " + json.length() + " characters, over the limit of "
+                    + maxMessageChars);
+            return true;
+        }
         ActorMessage message;
         try {
             message = ActorMessage.fromJson(json);
