@@ -180,6 +180,11 @@ public class KafkaActorServer implements AutoCloseable {
             logger.warning("Skipping unparseable message: " + json);
             return;
         }
+        // The JSON text "null" parses without error to no message; it is no more usable.
+        if (message == null) {
+            logger.warning("Skipping unparseable message: " + json);
+            return;
+        }
         Dispatcher.Dispatch dispatch = dispatcher.dispatch(message);
         if (!dispatch.accepted()) {
             logger.warning("Skipping refused message " + message.getMessageId() + ": "

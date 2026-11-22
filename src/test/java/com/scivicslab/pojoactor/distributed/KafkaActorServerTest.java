@@ -9,6 +9,7 @@ import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.clients.consumer.OffsetResetStrategy;
 import org.apache.kafka.common.TopicPartition;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
@@ -105,6 +106,26 @@ class KafkaActorServerTest {
         addRecord(0, "{not json");
         addRecord(1, message("worker", "run"));
         KafkaActorServer server = new KafkaActorServer(accepting(), me, consumer);
+
+        server.pollOnce(Duration.ZERO);
+
+        assertEquals(List.of("dispatch:worker/run", "commit:2"), events);
+    }
+
+    /**
+     * The JSON text {@code null} parses to no message at all. It can never be handed over, so it
+     * must be skipped like any unparseable message; otherwise it is read again forever and every
+     * message behind it in the partition waits. The real dispatcher chain is used, because that
+     * is where a null message used to fail.
+     */
+    @Test
+    @Tag("DistributedActorSystemRedesign_261115_oo01")
+    void jsonNullMessage_isSkippedAndItsPositionRecorded() {
+        addRecord(0, "null");
+        addRecord(1, message("worker", "run"));
+        Dispatcher chain = new DedupDispatcher(accepting(),
+                new InMemoryMessageIdStore(100, Duration.ofHours(1)));
+        KafkaActorServer server = new KafkaActorServer(chain, me, consumer);
 
         server.pollOnce(Duration.ZERO);
 

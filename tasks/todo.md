@@ -41,3 +41,14 @@ Version bump to 1.1.0 is the person's decision (see CLAUDE.md: keep the three re
 
 ## After Step 8 (left for later, per the person)
 - [x] One docs commit: stale `DistributedActorSystem` text in `reference/distributed.md`, the `NodeDiscovery*` javadoc examples, README, and the design doc's discrepancy list.
+
+## Error-handling findings 7 and 8 (chat-81, 2026-11-22)
+Build pod: own pod `mvn-c81` on ubuntu:24.04 + GraalVM CE 25 (no GraalVM CE image in the W206 registry).
+Tests carry `@Tag("DistributedActorSystemRedesign_261115_oo01")`. One commit per finding; no push; version stays 1.2.0-SNAPSHOT.
+
+- [x] `tasks/w206-build.sh` takes the pod name and image (`POD`, `IMAGE`); a pod without `mvn` gets GraalVM CE and Maven installed. Own commit.
+- [x] Baseline: full `mvn test` green in `mvn-c81`
+- [x] Finding 7: `KafkaActorServer.handOver` treats `fromJson("null")` (returns null) as unparseable: logged, skipped, position recorded. Failing test first (a `null` record then a valid one: the valid one is dispatched, the commit covers both)
+- [ ] Finding 8a: `AllowListDispatcher` refuses an allowed actor whose message loop has died (`!ref.isAlive()`), "Not accepted: actor not running"; allow-list check stays first. Failing test first (action throws `StackOverflowError`). `runInMailbox`'s `catch (Exception e)` is not changed (the person's decision)
+- [ ] Finding 8b: `KafkaActorServer.consumeLoop` guards `subscribe` (retried next turn) and catches `Throwable` around the loop body (SEVERE); a `VirtualMachineError` other than `StackOverflowError` is logged and rethrown. Failing tests first (poll throws `StackOverflowError` once; subscribe throws once)
+- [ ] Full `mvn test` green after `rm -rf target`; commit 7, commit 8
