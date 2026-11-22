@@ -4,9 +4,11 @@ import com.scivicslab.pojoactor.action.ActionResult;
 import com.scivicslab.pojoactor.distributed.transport.KafkaTransport;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
+import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.MockConsumer;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.clients.consumer.OffsetResetStrategy;
+import org.apache.kafka.common.KafkaException;
 import org.apache.kafka.common.TopicPartition;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
@@ -14,11 +16,15 @@ import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -186,5 +192,104 @@ class KafkaActorServerTest {
         server.pollOnce(Duration.ZERO);
 
         assertEquals(List.of("dispatch:worker/run", "commit:2"), events);
+    }
+
+    /**
+     * An Error while a message is handed over must not leave the consumer past that message: it
+     * goes back to it, so the message is read again, and records the messages before it.
+     */
+    @Test
+    @Tag("DistributedActorSystemRedesign_261115_oo01")
+    void anErrorWhileHandingOver_goesBackToThatMessage_andIsRethrown() {
+        addRecord(0, message("worker", "first"));
+        addRecord(1, message("worker", "boom"));
+        Dispatcher overflowing = m -> {
+            events.add("dispatch:" + m.getActionName());
+            if (m.getActionName().equals("boom")) throw new StackOverflowError("test: dispatch overflows");
+            return new Dispatcher.Dispatch(true,
+                    CompletableFuture.completedFuture(new ActionResult(true, "ok")));
+        };
+        KafkaActorServer server = new KafkaActorServer(overflowing, me, consumer);
+
+        assertThrows(StackOverflowError.class, () -> server.pollOnce(Duration.ZERO));
+
+        assertEquals(List.of("dispatch:first", "dispatch:boom", "commit:1"), events);
+        assertEquals(1L, consumer.position(tp), "the consumer goes back to the message that failed");
+    }
+
+    /**
+     * A consumer for the running loop: it subscribes for real, then holds one message. It can fail
+     * once in subscribe or once in poll.
+     */
+    private class LoopConsumer extends MockConsumer<String, String> {
+        final CountDownLatch committed = new CountDownLatch(1);
+        final List<Long> commits = Collections.synchronizedList(new ArrayList<>());
+        RuntimeException subscribeFailure;
+        Error pollFailure;
+
+        LoopConsumer() {
+            super(OffsetResetStrategy.EARLIEST);
+        }
+
+        @Override
+        public synchronized void subscribe(Collection<String> topics) {
+            if (subscribeFailure != null) {
+                RuntimeException e = subscribeFailure;
+                subscribeFailure = null;
+                throw e;
+            }
+            super.subscribe(topics);
+            rebalance(List.of(tp));
+            updateBeginningOffsets(Map.of(tp, 0L));
+            addRecord(new ConsumerRecord<>(TOPIC, 0, 0L, "k0", message("worker", "run")));
+        }
+
+        @Override
+        public synchronized ConsumerRecords<String, String> poll(Duration timeout) {
+            if (pollFailure != null) {
+                Error e = pollFailure;
+                pollFailure = null;
+                throw e;
+            }
+            return super.poll(timeout);
+        }
+
+        @Override
+        public synchronized void commitSync(Map<TopicPartition, OffsetAndMetadata> offsets) {
+            commits.add(offsets.get(tp).offset());
+            super.commitSync(offsets);
+            committed.countDown();
+        }
+    }
+
+    private void runUntilCommitted(LoopConsumer c) throws InterruptedException {
+        KafkaActorServer server = new KafkaActorServer(accepting(), me, c);
+        server.start();
+        try {
+            assertTrue(c.committed.await(5, TimeUnit.SECONDS),
+                    "the consumer loop is still running and handles the message");
+        } finally {
+            server.close();
+        }
+        assertEquals(List.of("dispatch:worker/run"), events);
+        assertEquals(List.of(1L), c.commits);
+    }
+
+    /** An Error thrown by poll must not end the consumer thread while senders get receipts. */
+    @Test
+    @Tag("DistributedActorSystemRedesign_261115_oo01")
+    void anErrorFromPoll_doesNotEndTheConsumerLoop() throws Exception {
+        LoopConsumer c = new LoopConsumer();
+        c.pollFailure = new StackOverflowError("test: poll overflows");
+        runUntilCommitted(c);
+    }
+
+    /** A subscribe that fails is tried again; it must not end the consumer thread. */
+    @Test
+    @Tag("DistributedActorSystemRedesign_261115_oo01")
+    void aFailingSubscribe_isTriedAgain() throws Exception {
+        LoopConsumer c = new LoopConsumer();
+        c.subscribeFailure = new KafkaException("test: broker not reachable");
+        runUntilCommitted(c);
     }
 }

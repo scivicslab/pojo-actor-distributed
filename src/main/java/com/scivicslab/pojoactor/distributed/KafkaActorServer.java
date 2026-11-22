@@ -47,7 +47,9 @@ import java.util.logging.Logger;
  *
  * <p>A message that cannot be parsed, or that the dispatcher refuses, is logged and skipped:
  * reading it again would not change the answer, and it would block every message behind it.
- * A message the dispatcher fails to take (an exception) is not recorded and is read again.</p>
+ * A message the dispatcher fails to take (an exception or an Error) is not recorded and is read
+ * again. The consume loop keeps running through such failures and through a failed subscribe;
+ * only a {@link VirtualMachineError} other than {@link StackOverflowError} ends it.</p>
  *
  * <p>No answer is written back. An action that has an answer to give sends it as a new message
  * to the sender's inbox.</p>
@@ -121,18 +123,47 @@ public class KafkaActorServer implements AutoCloseable {
         logger.info("KafkaActorServer stopped on node " + myNode.getNodeId());
     }
 
+    // While running is true, senders get receipts, so the loop must not end by itself: anything
+    // thrown is reported and the next turn tries again (a failed subscribe is repeated; a message
+    // whose position was not recorded is read again). Only a VirtualMachineError other than
+    // StackOverflowError ends the loop: it is reported, then left to the JVM.
     private void consumeLoop() {
-        consumer.subscribe(Collections.singletonList(KafkaTransport.inboxTopic(myNode.getNodeId())));
+        boolean subscribed = false;
         while (running) {
             try {
+                if (!subscribed) {
+                    consumer.subscribe(Collections.singletonList(
+                            KafkaTransport.inboxTopic(myNode.getNodeId())));
+                    subscribed = true;
+                }
                 pollOnce(Duration.ofMillis(200));
             } catch (WakeupException e) {
                 // close() asked the loop to leave
-            } catch (Exception e) {
-                if (running) {
-                    logger.log(Level.WARNING, "Error in KafkaActorServer consume loop", e);
+            } catch (VirtualMachineError e) {
+                if (!(e instanceof StackOverflowError)) {
+                    logger.log(Level.SEVERE, "KafkaActorServer consume loop stops on node "
+                            + myNode.getNodeId(), e);
+                    throw e;
                 }
+                if (!reportAndPause(e)) return;
+            } catch (Throwable e) {
+                if (!reportAndPause(e)) return;
             }
+        }
+    }
+
+    // Returns false when the loop thread was interrupted while pausing.
+    private boolean reportAndPause(Throwable e) {
+        if (!running) return true;
+        logger.log(Level.SEVERE, "Error in KafkaActorServer consume loop on node "
+                + myNode.getNodeId() + "; trying again", e);
+        try {
+            // Without a pause, a failure that repeats (a broker that is down) fills the log.
+            Thread.sleep(200);
+            return true;
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+            return false;
         }
     }
 
@@ -147,6 +178,7 @@ public class KafkaActorServer implements AutoCloseable {
 
         Map<TopicPartition, OffsetAndMetadata> done = new HashMap<>();
         boolean failed = false;
+        Error error = null;
         for (TopicPartition partition : records.partitions()) {
             if (failed) {
                 // Not touched: go back to the first message of this partition.
@@ -162,12 +194,22 @@ public class KafkaActorServer implements AutoCloseable {
                     consumer.seek(partition, record.offset());
                     failed = true;
                     break;
+                } catch (Error e) {
+                    // Go back and record what was done, as for an exception, then let the
+                    // consume loop decide what an Error means.
+                    consumer.seek(partition, record.offset());
+                    error = e;
+                    failed = true;
+                    break;
                 }
                 done.put(partition, new OffsetAndMetadata(record.offset() + 1));
             }
         }
         if (!done.isEmpty()) {
             consumer.commitSync(done);
+        }
+        if (error != null) {
+            throw error;
         }
     }
 

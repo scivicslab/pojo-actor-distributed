@@ -32,6 +32,10 @@ import java.util.logging.Logger;
  *
  * <p>A call for an actor that does not exist is refused with the same sentence as a call that
  * is not on the list, so a caller cannot find out which actors exist.</p>
+ *
+ * <p>An allowed call for an actor whose message loop is no longer running is refused with
+ * "Not accepted: actor not running": a receipt for it would promise a run that never comes.
+ * The check is made when the call arrives; an actor that dies after it does not run the call.</p>
  */
 public class AllowListDispatcher implements Dispatcher {
 
@@ -59,6 +63,12 @@ public class AllowListDispatcher implements Dispatcher {
         if (ref == null) {
             logger.warning("Refused call from outside: " + actorName + "/" + actionName);
             return Dispatch.refused("Not allowed: " + actorName + "/" + actionName);
+        }
+        // An actor whose message loop has died (an Error in an action ends it) stays registered,
+        // but nobody reads its mailbox: a call put there would never run.
+        if (!ref.isAlive()) {
+            logger.warning("Refused call for an actor that is not running: " + actorName + "/" + actionName);
+            return Dispatch.refused("Not accepted: actor not running");
         }
         try {
             return new Dispatch(true, runInMailbox(ref, actionName, args));

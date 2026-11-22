@@ -6,6 +6,7 @@ import com.scivicslab.pojoactor.core.ActorRef;
 import com.scivicslab.pojoactor.core.ActorSystem;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.Set;
@@ -155,5 +156,38 @@ class AllowListDispatcherTest {
         String me = Thread.currentThread().getName();
         dispatcher.dispatch("worker", "thread", "t").result().join();
         assertNotEquals(me, worker.callerThread);
+    }
+
+    /** A POJO whose "crash" action throws an Error, which ends the actor's message loop. */
+    static class Fragile implements CallableByActionName {
+        @Override
+        public ActionResult callByActionName(String action, String args) {
+            if (action.equals("crash")) throw new StackOverflowError("test: the action overflows");
+            return new ActionResult(true, args);
+        }
+    }
+
+    /**
+     * An actor whose message loop has died stays registered, but nobody reads its mailbox. A call
+     * accepted for it would never run, and its receipt would be a lie: the call is refused.
+     * Unknown and forbidden calls still read "Not allowed", because the allow-list is checked first.
+     */
+    @Test
+    @Tag("DistributedActorSystemRedesign_261115_oo01")
+    void actorWhoseMessageLoopDied_isRefusedNotAccepted() throws Exception {
+        ActorRef<Fragile> fragile = system.actorOf("fragile", new Fragile());
+        var d = new AllowListDispatcher(system, Set.of(
+                new AllowListDispatcher.AllowedAction("fragile", "crash"),
+                new AllowListDispatcher.AllowedAction("fragile", "echo")));
+
+        assertTrue(d.dispatch("fragile", "crash", "").accepted());
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (fragile.isAlive() && System.nanoTime() < deadline) Thread.sleep(10);
+        assertFalse(fragile.isAlive(), "the Error ended the actor's message loop");
+
+        Dispatcher.Dispatch r = d.dispatch("fragile", "echo", "x");
+        assertFalse(r.accepted());
+        assertEquals("Not accepted: actor not running", r.result().join().getResult());
+        assertEquals("Not allowed: fragile/hidden", d.dispatch("fragile", "hidden", "x").result().join().getResult());
     }
 }
