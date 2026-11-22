@@ -21,6 +21,10 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.scivicslab.pojoactor.action.ActionResult;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
+import com.sun.net.httpserver.HttpsConfigurator;
+import com.sun.net.httpserver.HttpsExchange;
+import com.sun.net.httpserver.HttpsParameters;
+import com.sun.net.httpserver.HttpsServer;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -33,6 +37,8 @@ import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLParameters;
 
 /**
  * HTTP server that receives actor invocation requests from remote nodes and hands them to a
@@ -84,22 +90,42 @@ import java.util.logging.Logger;
  * to {@value #INVOKE_WAIT_SECONDS} s.</p>
  *
  * <h2>Who can reach it</h2>
- * <p>The server has no TLS and no authentication. Whatever the dispatcher allows can be called by
- * anything that can open a connection to the port, and what travels (actions, arguments, results)
- * is readable on the network. So it listens on {@code 127.0.0.1} unless the program names another
- * address: {@link #HttpActorServer(Dispatcher, int)} and a {@code null} address both mean the
- * loopback address, and {@link #ALL_INTERFACES} or any other address is a choice the program makes
- * for nodes that must reach each other. A server bound to an address other than the loopback one
- * logs a warning at start-up saying so. Put such a port inside a network only those nodes can
- * reach, or behind something that provides TLS and authentication.</p>
+ * <p>On the loopback address ({@code 127.0.0.1}, the default) only callers on this machine can open a
+ * connection, and the server may run without TLS. Any other address can be reached from other hosts, so
+ * a server that listens on one <b>requires mutual TLS</b>: the program passes an {@link SSLContext}, the
+ * server listens with TLS, and it asks every caller for a certificate that the context's trust anchors
+ * accept ({@link SSLParameters#setNeedClientAuth(boolean) needClientAuth}); a caller with no certificate,
+ * or with one from another CA, never gets as far as a request. {@link #start()} on an address other than
+ * the loopback one, without an {@code SSLContext}, throws {@link IllegalStateException} before it listens.
+ * {@link #HttpActorServer(Dispatcher, int)} and a {@code null} address mean the loopback address.
+ * Passing an {@code SSLContext} makes the server use mutual TLS on the loopback address too.</p>
  *
- * <h2>Lifecycle</h2>
+ * <p>The library does not issue, distribute or renew certificates and keys. The program or the
+ * platform does that, and builds the {@code SSLContext} from whatever it has: certificates from a
+ * SPIFFE workload API (for example with java-spiffe), from cert-manager, or from key store files. The
+ * context also decides which certificates are accepted; the server only requires that the caller
+ * presents one.</p>
+ *
+ * <h2>Who is calling</h2>
+ * <p>After a handshake the server reads the caller's identity from its certificate: the SPIFFE ID (a
+ * {@code spiffe://} URI in the subject alternative name), otherwise the common name
+ * ({@link PeerIdentity}). It hands the identity to {@link Dispatcher#dispatch(ActorMessage, CallerIdentity)},
+ * so an {@link AllowListDispatcher} with a {@link CallPolicy#perCaller} policy lets each identity call
+ * only the actions listed for it. A call on a server without TLS has the identity
+ * {@link CallerIdentity#NONE}.</p>
+ *
+ *  * <h2>Lifecycle</h2>
  * <pre>{@code
  * Dispatcher dispatcher = new AllowListDispatcher(actorSystem, allowedActions);
  * HttpActorServer server = new HttpActorServer(dispatcher, "127.0.0.1", port);
  * server.start();
  * // ...
  * server.close();
+ *
+ * // for callers on other hosts: mutual TLS with an SSLContext the program built
+ * SSLContext tls = ...;   // from SPIFFE, cert-manager or key store files
+ * HttpActorServer open = new HttpActorServer(dispatcher, HttpActorServer.ALL_INTERFACES, port, tls);
+ * open.start();
  * }</pre>
  *
  * @since 1.0.0
@@ -122,12 +148,13 @@ public class HttpActorServer implements AutoCloseable {
     /** The address the server listens on unless the program names another. */
     private static final String LOOPBACK = "127.0.0.1";
 
-    /** The address that listens on every interface; see {@link #HttpActorServer(Dispatcher, String, int)}. */
+    /** The address that listens on every interface; which needs an SSLContext; see {@link #HttpActorServer(Dispatcher, String, int, SSLContext)}. */
     public static final String ALL_INTERFACES = "0.0.0.0";
 
     private final Dispatcher dispatcher;
     private final String bindAddress;
     private final int port;
+    private final SSLContext sslContext;
     private HttpServer httpServer;
     private volatile long maxBodyBytes = DEFAULT_MAX_BODY_BYTES;
     private volatile Semaphore inFlight = new Semaphore(DEFAULT_MAX_CONCURRENT_REQUESTS);
@@ -145,26 +172,45 @@ public class HttpActorServer implements AutoCloseable {
      * @param port       the port to listen on
      */
     public HttpActorServer(Dispatcher dispatcher, int port) {
-        this(dispatcher, LOOPBACK, port);
+        this(dispatcher, LOOPBACK, port, null);
     }
 
     /**
-     * Creates an HttpActorServer that listens on one address.
+     * Creates an HttpActorServer that listens on one address, without TLS.
      *
-     * <p>An address other than the loopback one makes every action the dispatcher allows callable
-     * by whatever can reach that address, with no TLS and no authentication. {@link #start()}
-     * logs a warning saying so.</p>
+     * <p>Only the loopback address can be used without TLS: {@link #start()} throws
+     * {@link IllegalStateException} for any other address. Use
+     * {@link #HttpActorServer(Dispatcher, String, int, SSLContext)} to listen where other hosts can
+     * reach.</p>
+     *
+     * @param dispatcher  decides what may be called and runs it through the actor's mailbox
+     * @param bindAddress the address to listen on; {@code null} means {@code "127.0.0.1"}
+     * @param port        the port to listen on
+     */
+    public HttpActorServer(Dispatcher dispatcher, String bindAddress, int port) {
+        this(dispatcher, bindAddress, port, null);
+    }
+
+    /**
+     * Creates an HttpActorServer that listens on one address, with mutual TLS when an
+     * {@code SSLContext} is given.
      *
      * @param dispatcher  decides what may be called and runs it through the actor's mailbox
      * @param bindAddress the address to listen on: {@code "127.0.0.1"} accepts only callers on this
      *                    machine, {@link #ALL_INTERFACES} accepts callers on every interface;
      *                    {@code null} means {@code "127.0.0.1"}
      * @param port        the port to listen on
+     * @param sslContext  the TLS configuration: this server's key and certificate, and the trust anchors
+     *                    that decide which callers' certificates are accepted. With it the server
+     *                    listens with TLS and requires a certificate from every caller. {@code null}
+     *                    means no TLS, which {@link #start()} accepts only on the loopback address.
+     * @since 5.0.0
      */
-    public HttpActorServer(Dispatcher dispatcher, String bindAddress, int port) {
+    public HttpActorServer(Dispatcher dispatcher, String bindAddress, int port, SSLContext sslContext) {
         this.dispatcher = dispatcher;
         this.bindAddress = bindAddress == null ? LOOPBACK : bindAddress;
         this.port = port;
+        this.sslContext = sslContext;
     }
 
     /**
@@ -199,24 +245,44 @@ public class HttpActorServer implements AutoCloseable {
      * from other hosts is the single most consequential thing about it, and reading it back
      * should not require inspecting the process from outside.
      *
+     * @throws IllegalStateException if the address is not the loopback address and there is no
+     *                               {@code SSLContext}: such a server would be open to other hosts without
+     *                               TLS and without a check of who calls. Nothing is listening then.
      * @throws IOException if the server cannot bind to the address and port
      */
     public synchronized void start() throws IOException {
         InetSocketAddress address = new InetSocketAddress(bindAddress, port);
+        if (address.isUnresolved()) {
+            throw new IOException("Cannot resolve the address to listen on: " + bindAddress);
+        }
         loopbackOnly = address.getAddress().isLoopbackAddress();
-        httpServer = HttpServer.create(address, 0);
+        if (!loopbackOnly && sslContext == null) {
+            throw new IllegalStateException("HttpActorServer would listen on " + address.getAddress().getHostAddress()
+                    + ":" + port + ", which other hosts can reach, without TLS. Listening anywhere but the"
+                    + " loopback address requires mutual TLS: pass an SSLContext, or listen on 127.0.0.1.");
+        }
+        httpServer = sslContext == null ? HttpServer.create(address, 0) : httpsServer(address);
         httpServer.createContext(CONTEXT_PREFIX, this::handleRequest);
         httpServer.createContext("/health", this::handleHealth);
         httpServer.setExecutor(Executors.newVirtualThreadPerTaskExecutor());
         httpServer.start();
-        logger.info("HttpActorServer started on " + address.getAddress().getHostAddress() + ":" + port);
-        if (!address.getAddress().isLoopbackAddress()) {
-            logger.warning("HttpActorServer listens on " + address.getAddress().getHostAddress() + ":" + port
-                    + ", which other hosts can reach. There is no TLS and no authentication: anything that"
-                    + " reaches this port can call every action the dispatcher allows, and what travels is"
-                    + " readable on the network. Listen on 127.0.0.1 unless the callers are nodes on a"
-                    + " network only they can reach.");
-        }
+        logger.info("HttpActorServer started on " + address.getAddress().getHostAddress() + ":" + port
+                + (sslContext == null ? " (no TLS, loopback only)" : " with mutual TLS"));
+    }
+
+    /** An HTTPS server that asks every caller for a certificate and accepts only TLS 1.3 and 1.2. */
+    private HttpsServer httpsServer(InetSocketAddress address) throws IOException {
+        HttpsServer https = HttpsServer.create(address, 0);
+        https.setHttpsConfigurator(new HttpsConfigurator(sslContext) {
+            @Override
+            public void configure(HttpsParameters parameters) {
+                SSLParameters ssl = getSSLContext().getDefaultSSLParameters();
+                ssl.setProtocols(new String[] {"TLSv1.3", "TLSv1.2"});
+                ssl.setNeedClientAuth(true);
+                parameters.setSSLParameters(ssl);
+            }
+        });
+        return https;
     }
 
     @Override
@@ -302,9 +368,11 @@ public class HttpActorServer implements AutoCloseable {
             }
 
             // The name in the path decides the target; the rest comes from the body.
+            CallerIdentity caller = exchange instanceof HttpsExchange tls
+                    ? PeerIdentity.of(tls.getSSLSession()) : CallerIdentity.NONE;
             Dispatcher.Dispatch dispatch = dispatcher.dispatch(new ActorMessage(
                     actorName, message.getActionName(), message.getArgs(),
-                    message.getMessageId(), message.getReplyTo()));
+                    message.getMessageId(), message.getReplyTo()), caller);
 
             if (dispatch.unavailable()) {
                 // Nothing was put in a mailbox; the sender may send the same message again later.

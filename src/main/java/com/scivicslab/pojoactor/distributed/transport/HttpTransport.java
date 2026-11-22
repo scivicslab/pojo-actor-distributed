@@ -32,6 +32,8 @@ import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLParameters;
 
 /**
  * HTTP-based transport for inter-node actor communication.
@@ -41,6 +43,16 @@ import java.util.logging.Logger;
  *
  * <p>Sends HTTP POST requests to {@code http://{host}:{port}/actor/{actorName}/invoke}
  * and waits synchronously for the JSON response.</p>
+ *
+ * <h2>TLS</h2>
+ * <p>With an {@link SSLContext} it sends to {@code https://{host}:{port}/...} instead, and
+ * presents the key and certificate of that context to the server, which a node that listens on
+ * another host than its own requires (mutual TLS; see {@code HttpActorServer}). The context also holds
+ * the trust anchors that decide which servers this transport accepts, and the standard check that the
+ * server's certificate names the host it was reached at applies on top of that. The library does not
+ * issue or distribute the keys and certificates: the program builds the {@code SSLContext} from a
+ * SPIFFE workload API, cert-manager or key store files. Without one, this transport sends plain HTTP,
+ * which a server accepts only on the loopback address.</p>
  */
 public class HttpTransport implements TransportLayer {
 
@@ -48,11 +60,30 @@ public class HttpTransport implements TransportLayer {
     private static final ObjectMapper objectMapper = new ObjectMapper();
 
     private final HttpClient httpClient;
+    private final String scheme;
 
+    /** Sends plain HTTP: to a server on this machine, or on a network that nothing else can reach. */
     public HttpTransport() {
-        this.httpClient = HttpClient.newBuilder()
-                .connectTimeout(Duration.ofSeconds(10))
-                .build();
+        this(null);
+    }
+
+    /**
+     * Sends over TLS, presenting the key and certificate of {@code sslContext} to the server.
+     *
+     * @param sslContext the TLS configuration built by the program: this node's key and certificate, and
+     *                   the trust anchors that decide which servers are accepted; {@code null} sends
+     *                   plain HTTP
+     * @since 5.0.0
+     */
+    public HttpTransport(SSLContext sslContext) {
+        HttpClient.Builder builder = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10));
+        if (sslContext != null) {
+            SSLParameters parameters = sslContext.getDefaultSSLParameters();
+            parameters.setProtocols(new String[] {"TLSv1.3", "TLSv1.2"});
+            builder.sslContext(sslContext).sslParameters(parameters);
+        }
+        this.httpClient = builder.build();
+        this.scheme = sslContext == null ? "http" : "https";
     }
 
     /**
@@ -102,7 +133,8 @@ public class HttpTransport implements TransportLayer {
     }
 
     private HttpRequest buildRequest(NodeInfo target, ActorMessage message, Duration timeout, String verb) {
-        String url = String.format("%s/actor/%s/%s", target.getUrl(), message.getActorName(), verb);
+        String url = String.format("%s://%s:%d/actor/%s/%s", scheme, target.getHost(), target.getPort(),
+                message.getActorName(), verb);
         return HttpRequest.newBuilder()
                 .uri(URI.create(url))
                 .header("Content-Type", "application/json")

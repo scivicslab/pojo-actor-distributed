@@ -1,6 +1,7 @@
 package com.scivicslab.pojoactor.distributed;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
@@ -97,8 +98,8 @@ class HttpActorServerBindAddressTest {
     }
 
     /**
-     * The default is this machine alone. The server has no TLS and no authentication, so listening
-     * on a LAN address is something a program asks for by name, never something it gets by leaving
+     * The default is this machine alone. Listening on a LAN address needs mutual TLS, so it is
+     * something a program asks for by name, with an SSLContext, never something it gets by leaving
      * the address out.
      */
     @Test
@@ -135,34 +136,30 @@ class HttpActorServerBindAddressTest {
         }
     }
 
-    /** Hosts that must reach each other ask for it with an address; the server then says what that costs. */
+    /**
+     * Hosts that must reach each other ask for it with an address, and with TLS: an address other than
+     * the loopback one without an SSLContext does not start. Both the wildcard address and a LAN
+     * address of this machine are tried, and nothing may be listening afterwards.
+     */
     @Test
-    void anExplicitNonLoopbackAddress_listensThereAndWarnsThatThereIsNoTlsAndNoAuthentication() throws Exception {
+    void anExplicitNonLoopbackAddressWithoutAnSslContext_failsToStartAndListensNowhere() throws Exception {
         InetAddress lan = nonLoopbackAddress();
         Assumptions.assumeTrue(lan != null, "no non-loopback IPv4 address on this machine");
 
-        java.util.List<java.util.logging.LogRecord> records = new java.util.concurrent.CopyOnWriteArrayList<>();
-        java.util.logging.Handler capture = new java.util.logging.Handler() {
-            @Override public void publish(java.util.logging.LogRecord r) { records.add(r); }
-            @Override public void flush() { }
-            @Override public void close() { }
-        };
-        java.util.logging.Logger log = java.util.logging.Logger.getLogger(HttpActorServer.class.getName());
-        log.addHandler(capture);
         ActorSystem system = new ActorSystem("bind-explicit");
-        int port = freePort();
-        try (HttpActorServer server = new HttpActorServer(new AllowListDispatcher(system, java.util.Set.of()),
-                HttpActorServer.ALL_INTERFACES, port)) {
-            server.start();
+        try {
+            for (String address : new String[] {HttpActorServer.ALL_INTERFACES, lan.getHostAddress()}) {
+                int port = freePort();
+                HttpActorServer server = new HttpActorServer(new AllowListDispatcher(system, java.util.Set.of()),
+                        address, port);
 
-            assertTrue(canConnect(lan, port), "reachable on " + lan.getHostAddress());
-            String warning = records.stream()
-                    .filter(r -> r.getLevel() == java.util.logging.Level.WARNING)
-                    .map(java.util.logging.LogRecord::getMessage).findFirst().orElse("");
-            assertTrue(warning.contains("no TLS") && warning.contains("no authentication"),
-                    "the start-up warning must say there is no TLS and no authentication, was: " + warning);
+                IllegalStateException failure = assertThrows(IllegalStateException.class, server::start, address);
+
+                assertTrue(failure.getMessage().contains("TLS"), failure.getMessage());
+                assertFalse(canConnect(InetAddress.getByName("127.0.0.1"), port), address + ": nothing may listen");
+                assertFalse(canConnect(lan, port), address + ": nothing may listen");
+            }
         } finally {
-            log.removeHandler(capture);
             system.terminate();
         }
     }
