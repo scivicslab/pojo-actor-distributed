@@ -100,8 +100,29 @@ public class KafkaActorServer implements AutoCloseable {
      * @param brokers    Kafka bootstrap servers (e.g. {@code "kafka:9092"})
      */
     public KafkaActorServer(Dispatcher dispatcher, NodeInfo myNode, String brokers) {
+        this(dispatcher, myNode, brokers, null);
+    }
+
+    /**
+     * Creates a KafkaActorServer with the program's own Kafka client settings.
+     *
+     * <p>The settings reach the Kafka consumer as they are: {@code security.protocol},
+     * {@code ssl.*}, {@code sasl.*} and the like. A message read from the inbox has no caller
+     * identity ({@link CallerIdentity#NONE}); who may write to the inbox is decided by the broker's
+     * access control, not by this server.</p>
+     *
+     * @param dispatcher       decides what may be called and runs it through the actor's mailbox
+     * @param myNode           this node's identity (determines which inbox topic to consume)
+     * @param brokers          Kafka bootstrap servers
+     * @param clientProperties the program's Kafka consumer settings; may be null. The settings this
+     *                         server depends on (group, starting position, manual commit, deserialisers)
+     *                         cannot be changed: setting one to another value throws
+     *                         {@link IllegalArgumentException}
+     * @since 5.0.0
+     */
+    public KafkaActorServer(Dispatcher dispatcher, NodeInfo myNode, String brokers, Properties clientProperties) {
         this(dispatcher, myNode,
-                new KafkaConsumer<>(consumerProperties(brokers, myNode.getNodeId())));
+                new KafkaConsumer<>(consumerProperties(brokers, myNode.getNodeId(), clientProperties)));
     }
 
     // For tests: a consumer that needs no broker.
@@ -298,6 +319,10 @@ public class KafkaActorServer implements AutoCloseable {
     }
 
     static Properties consumerProperties(String brokers, String nodeId) {
+        return consumerProperties(brokers, nodeId, null);
+    }
+
+    static Properties consumerProperties(String brokers, String nodeId, Properties fromProgram) {
         Properties props = new Properties();
         props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, brokers);
         props.put(ConsumerConfig.GROUP_ID_CONFIG, "pojo-actor-server-" + nodeId);
@@ -306,6 +331,6 @@ public class KafkaActorServer implements AutoCloseable {
         props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
         // The position is recorded by hand, after the dispatcher has taken the message.
         props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, "false");
-        return props;
+        return com.scivicslab.pojoactor.distributed.transport.KafkaClientSettings.merge(props, fromProgram);
     }
 }
