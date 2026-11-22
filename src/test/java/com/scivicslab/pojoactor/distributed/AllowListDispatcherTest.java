@@ -162,7 +162,9 @@ class AllowListDispatcherTest {
     static class Fragile implements CallableByActionName {
         @Override
         public ActionResult callByActionName(String action, String args) {
-            if (action.equals("crash")) throw new StackOverflowError("test: the action overflows");
+            // A fatal VirtualMachineError (not StackOverflowError) ends the message loop in every
+            // POJO-actor version; since 4.9 an ordinary Error such as StackOverflowError no longer does.
+            if (action.equals("crash")) throw new InternalError("test: the JVM-level failure ends the loop");
             return new ActionResult(true, args);
         }
     }
