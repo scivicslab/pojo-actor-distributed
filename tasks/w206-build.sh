@@ -19,7 +19,7 @@ if ! kubectl get pod $POD >/dev/null 2>&1; then
   kubectl wait --for=condition=Ready pod/$POD --timeout=180s
   if ! kubectl exec $POD -- sh -c 'command -v mvn' >/dev/null 2>&1; then
     kubectl exec $POD -- bash -c "set -e
-      apt-get update -qq && apt-get install -y -qq curl ca-certificates >/dev/null
+      apt-get update -qq && apt-get install -y -qq curl ca-certificates git >/dev/null
       mkdir -p /opt/graalvm /opt/maven
       curl -fsSL https://github.com/graalvm/graalvm-ce-builds/releases/download/jdk-$GRAALVM_VERSION/graalvm-community-jdk-${GRAALVM_VERSION}_linux-x64_bin.tar.gz \
         | tar -xz -C /opt/graalvm --strip-components=1
