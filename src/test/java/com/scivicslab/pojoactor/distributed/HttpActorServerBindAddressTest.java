@@ -1,6 +1,7 @@
 package com.scivicslab.pojoactor.distributed;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
@@ -27,6 +28,7 @@ import com.scivicslab.pojoactor.core.ActorSystem;
  * one arriving on another interface does not.
  */
 @Tag("WorkflowTab_BindAddress_260906_oo01")
+@Tag("HttpActorServerBinding_261123_oo01")
 @DisplayName("HttpActorServer — the addresses it accepts callers from")
 class HttpActorServerBindAddressTest {
 
@@ -95,21 +97,111 @@ class HttpActorServerBindAddressTest {
         }
     }
 
-    /** The existing constructor keeps listening everywhere: a cluster of hosts needs that. */
+    /**
+     * The default is this machine alone. Listening on a LAN address needs mutual TLS, so it is
+     * something a program asks for by name, with an SSLContext, never something it gets by leaving
+     * the address out.
+     */
     @Test
-    void withoutABindAddress_listensOnEveryInterface() throws Exception {
+    void withoutABindAddress_listensOnLoopbackOnly() throws Exception {
         InetAddress lan = nonLoopbackAddress();
         Assumptions.assumeTrue(lan != null, "no non-loopback IPv4 address on this machine");
 
-        ActorSystem system = new ActorSystem("bind-wildcard");
+        ActorSystem system = new ActorSystem("bind-default");
         int port = freePort();
         try (HttpActorServer server = new HttpActorServer(new AllowListDispatcher(system, java.util.Set.of()), port)) {
             server.start();
 
-            assertTrue(canConnect(InetAddress.getByName("127.0.0.1"), port));
-            assertTrue(canConnect(lan, port), "reachable on " + lan.getHostAddress());
+            assertTrue(canConnect(InetAddress.getByName("127.0.0.1"), port), "reachable on loopback");
+            assertFalse(canConnect(lan, port), "must not be reachable on " + lan.getHostAddress());
         } finally {
             system.terminate();
+        }
+    }
+
+    @Test
+    void aNullBindAddress_isTheLoopbackDefaultToo() throws Exception {
+        InetAddress lan = nonLoopbackAddress();
+        Assumptions.assumeTrue(lan != null, "no non-loopback IPv4 address on this machine");
+
+        ActorSystem system = new ActorSystem("bind-null");
+        int port = freePort();
+        try (HttpActorServer server = new HttpActorServer(new AllowListDispatcher(system, java.util.Set.of()), null, port)) {
+            server.start();
+
+            assertTrue(canConnect(InetAddress.getByName("127.0.0.1"), port));
+            assertFalse(canConnect(lan, port), "null must not mean every interface");
+        } finally {
+            system.terminate();
+        }
+    }
+
+    /**
+     * Hosts that must reach each other ask for it with an address, and with TLS: an address other than
+     * the loopback one without an SSLContext does not start. Both the wildcard address and a LAN
+     * address of this machine are tried, and nothing may be listening afterwards.
+     */
+    @Test
+    void anExplicitNonLoopbackAddressWithoutAnSslContext_failsToStartAndListensNowhere() throws Exception {
+        InetAddress lan = nonLoopbackAddress();
+        Assumptions.assumeTrue(lan != null, "no non-loopback IPv4 address on this machine");
+
+        ActorSystem system = new ActorSystem("bind-explicit");
+        try {
+            for (String address : new String[] {HttpActorServer.ALL_INTERFACES, lan.getHostAddress()}) {
+                int port = freePort();
+                HttpActorServer server = new HttpActorServer(new AllowListDispatcher(system, java.util.Set.of()),
+                        address, port);
+
+                IllegalStateException failure = assertThrows(IllegalStateException.class, server::start, address);
+
+                assertTrue(failure.getMessage().contains("TLS"), failure.getMessage());
+                assertFalse(canConnect(InetAddress.getByName("127.0.0.1"), port), address + ": nothing may listen");
+                assertFalse(canConnect(lan, port), address + ": nothing may listen");
+            }
+        } finally {
+            system.terminate();
+        }
+    }
+
+    @Test
+    void aLoopbackServer_logsNoWarning() throws Exception {
+        java.util.List<java.util.logging.LogRecord> records = new java.util.concurrent.CopyOnWriteArrayList<>();
+        java.util.logging.Handler capture = new java.util.logging.Handler() {
+            @Override public void publish(java.util.logging.LogRecord r) { records.add(r); }
+            @Override public void flush() { }
+            @Override public void close() { }
+        };
+        java.util.logging.Logger log = java.util.logging.Logger.getLogger(HttpActorServer.class.getName());
+        log.addHandler(capture);
+        ActorSystem system = new ActorSystem("bind-quiet");
+        int port = freePort();
+        try (HttpActorServer server = new HttpActorServer(new AllowListDispatcher(system, java.util.Set.of()), port)) {
+            server.start();
+
+            assertTrue(records.stream().noneMatch(r -> r.getLevel() == java.util.logging.Level.WARNING));
+        } finally {
+            log.removeHandler(capture);
+            system.terminate();
+        }
+    }
+
+    @Test
+    void distributedActorSystem_startHttpServerWithoutAnAddress_isLoopbackOnly() throws Exception {
+        InetAddress lan = nonLoopbackAddress();
+        Assumptions.assumeTrue(lan != null, "no non-loopback IPv4 address on this machine");
+
+        int port = freePort();
+        DistributedIIActorSystem system = DistributedIIActorSystem.builder().noDeduplication()
+                .discovery(new OneNodeDiscovery(port))
+                .build();
+        try {
+            system.startHttpServer(port);
+
+            assertTrue(canConnect(InetAddress.getByName("127.0.0.1"), port));
+            assertFalse(canConnect(lan, port), "must not be reachable on " + lan.getHostAddress());
+        } finally {
+            system.close();
         }
     }
 

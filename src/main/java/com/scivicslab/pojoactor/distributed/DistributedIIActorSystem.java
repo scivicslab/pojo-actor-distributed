@@ -28,6 +28,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Logger;
+import javax.net.ssl.SSLContext;
 
 /**
  * An {@link IIActorSystem} whose actors can call, and be called by, actors in other processes.
@@ -50,6 +51,14 @@ import java.util.logging.Logger;
  * system.addIIActor(mathActor);
  * }</pre>
  *
+ * <p>Nodes on other hosts call each other over mutual TLS. The program builds an {@code SSLContext}
+ * from the keys and certificates its platform gives it (a SPIFFE workload API, cert-manager or key
+ * store files) and passes it to {@link Builder#sslContext}; the system then sends over TLS and its
+ * HTTP server requires a certificate from every caller. Listening on an address other than
+ * {@code 127.0.0.1} without an {@code SSLContext} fails at start-up. {@link Builder#callPolicy} lets
+ * each caller's identity (the SPIFFE ID or common name in its certificate) call only the actions
+ * listed for it.</p>
+ *
  * @since 1.0.0
  */
 public class DistributedIIActorSystem extends IIActorSystem implements AutoCloseable {
@@ -61,6 +70,7 @@ public class DistributedIIActorSystem extends IIActorSystem implements AutoClose
     private final NodeInfo myNode;
     private final java.time.Duration callTimeout;
     private final Dispatcher dispatcher;
+    private final SSLContext sslContext;
     private final ConcurrentHashMap<String, NodeInfo> remoteNodes = new ConcurrentHashMap<>();
     private final AtomicBoolean terminated = new AtomicBoolean(false);
     private HttpActorServer httpServer;
@@ -68,11 +78,13 @@ public class DistributedIIActorSystem extends IIActorSystem implements AutoClose
 
     private DistributedIIActorSystem(Builder builder) {
         super(builder.discovery.getMyNodeId());
-        this.transport = builder.transport;
+        this.transport = builder.transport != null ? builder.transport : new HttpTransport(builder.sslContext);
+        this.sslContext = builder.sslContext;
         this.discovery = builder.discovery;
         this.callTimeout = builder.callTimeout;
         this.myNode = new NodeInfo(discovery.getMyNodeId(), discovery.getMyHost(), discovery.getMyPort());
-        Dispatcher allowList = new AllowListDispatcher(this, builder.allowedActions);
+        Dispatcher allowList = new AllowListDispatcher(this,
+                builder.callPolicy != null ? builder.callPolicy : CallPolicy.anyCaller(builder.allowedActions));
         this.dispatcher = builder.messageIds == null ? allowList
                 : new DedupDispatcher(allowList, builder.messageIds);
         for (NodeInfo node : discovery.getAllNodes()) {
@@ -83,8 +95,9 @@ public class DistributedIIActorSystem extends IIActorSystem implements AutoClose
     }
 
     /**
-     * Starts an {@link HttpActorServer} on every interface. Whatever the allow-list names becomes
-     * callable by anything that can reach the port; see {@link #startHttpServer(String, int)}.
+     * Starts an {@link HttpActorServer} on {@code 127.0.0.1}, callable from this machine only. When the
+     * builder was given an {@code SSLContext}, the server uses mutual TLS.
+     * Nodes on other hosts cannot reach it; see {@link #startHttpServer(String, int)} for them.
      *
      * @param port the port to listen on (should match {@code getMyNode().getPort()})
      * @throws IOException if the port cannot be bound
@@ -96,15 +109,37 @@ public class DistributedIIActorSystem extends IIActorSystem implements AutoClose
     /**
      * Starts an {@link HttpActorServer} on one address.
      *
-     * <p>Pass {@code "127.0.0.1"} when the callers are on this machine, and leave it open only
-     * when they are other hosts. What may be called is decided by the allow-list alone.</p>
+     * <p>Pass {@link HttpActorServer#ALL_INTERFACES} or a host's address only when the callers are
+     * nodes on other hosts, and only with an {@code SSLContext} given to {@link Builder#sslContext}: an
+     * address other than the loopback one without it makes this method throw
+     * {@link IllegalStateException}, and nothing listens. What may be called, and by whom, is decided
+     * by the allow-list alone.</p>
      *
-     * @param bindAddress the address to listen on; {@code null} listens on every interface
+     * @param bindAddress the address to listen on; {@code null} means {@code "127.0.0.1"}
      * @param port        the port to listen on (should match {@code getMyNode().getPort()})
+     * @throws IllegalStateException if the address is not the loopback address and the builder had no
+     *                               {@code SSLContext}
      * @throws IOException if the address and port cannot be bound
      */
     public synchronized void startHttpServer(String bindAddress, int port) throws IOException {
-        httpServer = new HttpActorServer(dispatcher, bindAddress, port);
+        startHttpServer(bindAddress, port, sslContext);
+    }
+
+    /**
+     * Starts an {@link HttpActorServer} on one address with the given TLS configuration, instead of
+     * the one given to the builder.
+     *
+     * @param bindAddress the address to listen on; {@code null} means {@code "127.0.0.1"}
+     * @param port        the port to listen on
+     * @param sslContext  the TLS configuration; {@code null} means no TLS, which only the loopback
+     *                    address accepts
+     * @throws IllegalStateException if the address is not the loopback address and there is no
+     *                               {@code SSLContext}
+     * @throws IOException if the address and port cannot be bound
+     * @since 5.0.0
+     */
+    public synchronized void startHttpServer(String bindAddress, int port, SSLContext sslContext) throws IOException {
+        httpServer = new HttpActorServer(dispatcher, bindAddress, port, sslContext);
         httpServer.start();
     }
 
@@ -114,7 +149,20 @@ public class DistributedIIActorSystem extends IIActorSystem implements AutoClose
      * @param brokers Kafka bootstrap servers
      */
     public synchronized void startServer(String brokers) {
-        kafkaServer = new KafkaActorServer(dispatcher, myNode, brokers);
+        startServer(brokers, new java.util.Properties());
+    }
+
+    /**
+     * Starts a {@link KafkaActorServer} that reads this node's inbox, with the program's own Kafka client
+     * settings such as {@code security.protocol}, {@code ssl.*} and {@code sasl.*}.
+     *
+     * @param brokers          Kafka bootstrap servers
+     * @param clientProperties settings for the Kafka consumer, passed on as they are; the settings that
+     *                         the receiver depends on cannot be set to another value
+     * @since 5.0.0
+     */
+    public synchronized void startServer(String brokers, java.util.Properties clientProperties) {
+        kafkaServer = new KafkaActorServer(dispatcher, myNode, brokers, clientProperties);
         kafkaServer.start();
     }
 
@@ -238,7 +286,9 @@ public class DistributedIIActorSystem extends IIActorSystem implements AutoClose
 
     public static class Builder {
 
-        private TransportLayer transport = new HttpTransport();
+        private TransportLayer transport;
+        private SSLContext sslContext;
+        private CallPolicy callPolicy;
         private NodeDiscovery discovery;
         private Set<AllowListDispatcher.AllowedAction> allowedActions = Set.of();
         private MessageIdStore messageIds;
@@ -251,6 +301,32 @@ public class DistributedIIActorSystem extends IIActorSystem implements AutoClose
          */
         public Builder allowedActions(Set<AllowListDispatcher.AllowedAction> allowed) {
             this.allowedActions = Set.copyOf(allowed);
+            return this;
+        }
+
+        /**
+         * Decides, for each call from outside, whether its caller may call that action of that actor.
+         * Use {@link CallPolicy#perCaller} to let each identity (the SPIFFE ID or common name in the
+         * caller's certificate) call only the actions listed for it. It replaces
+         * {@link #allowedActions}; give one of the two.
+         *
+         * @since 5.0.0
+         */
+        public Builder callPolicy(CallPolicy policy) {
+            this.callPolicy = java.util.Objects.requireNonNull(policy, "policy");
+            return this;
+        }
+
+        /**
+         * The TLS configuration, built by the program from the keys and certificates its platform
+         * gives it: this node's key and certificate, and the trust anchors that decide which nodes are
+         * accepted. With it, the default transport sends over TLS and {@code startHttpServer} listens
+         * with mutual TLS. Listening on an address other than {@code 127.0.0.1} needs it.
+         *
+         * @since 5.0.0
+         */
+        public Builder sslContext(SSLContext sslContext) {
+            this.sslContext = java.util.Objects.requireNonNull(sslContext, "sslContext");
             return this;
         }
 
@@ -317,6 +393,10 @@ public class DistributedIIActorSystem extends IIActorSystem implements AutoClose
         }
 
         public DistributedIIActorSystem build() {
+            if (callPolicy != null && !allowedActions.isEmpty()) {
+                throw new IllegalStateException(
+                        "Give either allowedActions(...) or callPolicy(...): the call policy decides alone");
+            }
             if (!deduplicationChosen) {
                 throw new IllegalStateException(
                         "Choose how duplicate messages are handled: deduplicateWith(store) or noDeduplication()");

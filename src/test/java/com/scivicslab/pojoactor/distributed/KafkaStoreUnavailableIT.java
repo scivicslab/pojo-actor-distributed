@@ -73,8 +73,8 @@ class KafkaStoreUnavailableIT {
             Thread.sleep(3000);
             assertEquals(1, tally.runs("c1"), "c1 ran once");
             assertEquals(1, tally.runs("c2"), "c2 ran once");
-            assertTrue(store.contains(id1), "c1's id was recorded after the repair");
-            assertTrue(store.contains(id2));
+            assertTrue(store.containsId(id1), "c1's id was recorded after the repair");
+            assertTrue(store.containsId(id2));
         }
     }
 

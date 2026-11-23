@@ -60,6 +60,12 @@ public class InMemoryMessageIdStore implements MessageIdStore {
     }
 
     @Override
+    public synchronized boolean hasRoom() {
+        expire();
+        return seen.size() < maxEntries;
+    }
+
+    @Override
     public synchronized void add(String messageId) {
         addAt(messageId, clock.millis());
     }

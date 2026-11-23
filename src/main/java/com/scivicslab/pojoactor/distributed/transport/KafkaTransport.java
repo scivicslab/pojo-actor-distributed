@@ -86,7 +86,26 @@ public class KafkaTransport implements TransportLayer {
      * @param brokers Kafka bootstrap servers (e.g. {@code "kafka:9092"})
      */
     public KafkaTransport(NodeInfo myNode, String brokers) {
-        this(myNode, new KafkaProducer<>(producerProperties(brokers)));
+        this(myNode, brokers, null);
+    }
+
+    /**
+     * Creates a KafkaTransport with the program's own Kafka client settings.
+     *
+     * <p>The settings reach the Kafka producer as they are: {@code security.protocol},
+     * {@code ssl.*}, {@code sasl.*} and the like. The library does not secure the connection to the
+     * brokers by itself; the program and the platform decide that and pass the settings here.</p>
+     *
+     * @param myNode           this node's identity
+     * @param brokers          Kafka bootstrap servers
+     * @param clientProperties the program's Kafka producer settings; may be null. The settings that the
+     *                         receipt depends on (acknowledgement by every in-sync replica, idempotence,
+     *                         serialisers) cannot be changed: setting one to another value throws
+     *                         {@link IllegalArgumentException}
+     * @since 5.0.0
+     */
+    public KafkaTransport(NodeInfo myNode, String brokers, java.util.Properties clientProperties) {
+        this(myNode, new KafkaProducer<>(producerProperties(brokers, clientProperties)));
     }
 
     // For tests: a producer that needs no broker.
@@ -135,6 +154,10 @@ public class KafkaTransport implements TransportLayer {
     }
 
     static Properties producerProperties(String brokers) {
+        return producerProperties(brokers, null);
+    }
+
+    static Properties producerProperties(String brokers, Properties fromProgram) {
         Properties props = new Properties();
         props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, brokers);
         props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
@@ -143,6 +166,6 @@ public class KafkaTransport implements TransportLayer {
         // write the message twice.
         props.put(ProducerConfig.ACKS_CONFIG, "all");
         props.put(ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, "true");
-        return props;
+        return KafkaClientSettings.merge(props, fromProgram);
     }
 }

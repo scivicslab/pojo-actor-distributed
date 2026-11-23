@@ -40,9 +40,56 @@ public interface Dispatcher {
      */
     Dispatch dispatch(ActorMessage message);
 
+    /**
+     * Checks a call whose sender is known and, if it is allowed, puts it in the target actor's
+     * mailbox. The receivers call this when they can tell who sent the call: the HTTP receiver
+     * reads the identity from the certificate in the TLS handshake. A dispatcher that does not
+     * look at who called does not override it, and the call is checked as {@link #dispatch(ActorMessage)}
+     * checks it.
+     *
+     * @param message the call
+     * @param caller  who sent it; {@link CallerIdentity#NONE} when the receiver cannot tell
+     * @return the outcome: {@link Dispatch#accepted()} is the receipt
+     * @since 5.0.0
+     */
+    default Dispatch dispatch(ActorMessage message, CallerIdentity caller) {
+        return dispatch(message);
+    }
+
     /** Dispatches a call that has no id of its own to remember: one is made up. */
     default Dispatch dispatch(String actorName, String actionName, String args) {
         return dispatch(new ActorMessage(actorName, actionName, args));
+    }
+
+    /**
+     * Whether this dispatcher would let the message through at all, by its actor and action. Asking does
+     * not run, enqueue or record anything.
+     *
+     * <p>A dispatcher that remembers messages ({@link DedupDispatcher}) asks this first, so that what it
+     * remembers does not change the answer for a call that is not allowed.</p>
+     *
+     * @param message the message to check
+     * @return false when {@link #dispatch} would refuse the message because it is not allowed; true
+     *         otherwise, and by default
+     */
+    default boolean permits(ActorMessage message) {
+        return true;
+    }
+
+    /**
+     * Whether this dispatcher would let the message through at all when {@code caller} sent it, by its
+     * actor and action and by who the caller is. Asking does not run, enqueue or record anything. A
+     * dispatcher that does not look at who called does not override it, and the answer is that of
+     * {@link #permits(ActorMessage)}.
+     *
+     * @param message the message to check
+     * @param caller  who sent it; {@link CallerIdentity#NONE} when the receiver cannot tell
+     * @return false when {@link #dispatch(ActorMessage, CallerIdentity)} would refuse the message because
+     *         this caller may not call it; true otherwise, and by default
+     * @since 5.0.0
+     */
+    default boolean permits(ActorMessage message, CallerIdentity caller) {
+        return permits(message);
     }
 
     /**

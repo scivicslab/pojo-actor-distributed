@@ -87,8 +87,8 @@ class KafkaActorServerStoreUnavailableTest {
 
         assertEquals(Set.of(), consumer.paused());
         assertEquals(List.of("run:b", "commit:2"), events);
-        assertTrue(store.contains(ActorMessage.fromJson(a).getMessageId()));
-        assertTrue(store.contains(ActorMessage.fromJson(b).getMessageId()));
+        assertTrue(store.containsId(ActorMessage.fromJson(a).getMessageId()));
+        assertTrue(store.containsId(ActorMessage.fromJson(b).getMessageId()));
     }
 
     @Test

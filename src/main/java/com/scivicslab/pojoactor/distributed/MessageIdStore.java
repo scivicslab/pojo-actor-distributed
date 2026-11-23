@@ -29,6 +29,17 @@ public interface MessageIdStore {
     /** @return true if this id was added and has not been forgotten */
     boolean contains(String messageId);
 
+    /**
+     * Whether an id can be added without a remembered, unexpired id being forgotten to make room.
+     *
+     * <p>{@link DedupDispatcher} refuses a new message while this is false: a store that forgot a live id
+     * would let a copy of that message run again, and a sender who sends many new ids could make it so.
+     * The default is true, for a store that never forgets a live id.</p>
+     */
+    default boolean hasRoom() {
+        return true;
+    }
+
     /** Remembers the id. Must be durable when this returns if the store claims to survive a restart. */
     void add(String messageId);
 }

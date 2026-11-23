@@ -57,8 +57,8 @@ class DedupDispatcherStoreUnavailableTest {
         Dispatcher.Dispatch resend = dedup.dispatch(msg("m1"));
 
         assertTrue(next.accepted(), "outcome " + next.outcome());
-        assertTrue(store.contains("m1"), "the id that could not be recorded is recorded now");
-        assertTrue(store.contains("m2"));
+        assertTrue(store.containsId("m1"), "the id that could not be recorded is recorded now");
+        assertTrue(store.containsId("m2"));
         assertTrue(resend.accepted(), "a resend of m1 is a duplicate: accepted, not run");
         assertEquals(List.of("m1", "m2"), reached);
     }

@@ -50,6 +50,24 @@
     <turing-workflow.version>4.0.0</turing-workflow.version>
   </properties>
 
+  <!-- kafka-clients brings in its compression libraries at run time; these set the versions it uses.
+       They are not dependencies of this project: a program that uses Kafka resolves them through
+       kafka-clients (optional here), at the versions below when it depends on this project. -->
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>at.yawk.lz4</groupId>
+        <artifactId>lz4-java</artifactId>
+        <version>1.14.1</version>
+      </dependency>
+      <dependency>
+        <groupId>org.xerial.snappy</groupId>
+        <artifactId>snappy-java</artifactId>
+        <version>1.1.10.12</version>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+
   <dependencies>
     <dependency>
       <groupId>com.scivicslab</groupId>
@@ -73,7 +91,7 @@
     <dependency>
       <groupId>org.apache.kafka</groupId>
       <artifactId>kafka-clients</artifactId>
-      <version>3.7.0</version>
+      <version>3.9.2</version>
       <optional>true</optional>
     </dependency>
 
@@ -87,6 +105,13 @@
       <groupId>org.junit.jupiter</groupId>
       <artifactId>junit-jupiter-api</artifactId>
       <version>5.9.3</version>
+      <scope>test</scope>
+    </dependency>
+    <!-- The tests make a throw-away certificate authority and certificates for mutual TLS. -->
+    <dependency>
+      <groupId>org.bouncycastle</groupId>
+      <artifactId>bcpkix-jdk18on</artifactId>
+      <version>1.79</version>
       <scope>test</scope>
     </dependency>
     <dependency>

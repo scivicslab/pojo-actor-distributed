@@ -18,6 +18,9 @@ package com.scivicslab.pojoactor.distributed;
 
 import com.scivicslab.pojoactor.action.ActionResult;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Clock;
 import java.time.Duration;
 import java.util.Iterator;
@@ -28,7 +31,23 @@ import java.util.logging.Level;
 import java.util.logging.Logger;
 
 /**
- * A {@link Dispatcher} that lets each {@code messageId} through once.
+ * A {@link Dispatcher} that lets each message through once.
+ *
+ * <p>What is remembered is the id together with a digest of the actor, the action and the arguments, not
+ * the id alone. A copy is a message with the same id and the same content, which is what a sender that
+ * resent after a lost receipt sends. Another sender who reaches the receiver first with the same id and
+ * different content does not make the real message a duplicate: it is a different message and it runs.
+ * Whoever knows the whole message can still stop it by sending it first; that does not change what runs,
+ * only who sent it, and a receiver with no authentication cannot tell the two apart.</p>
+ *
+ * <p>The allow-list is asked first ({@link Dispatcher#permits}). A message that is not allowed is refused
+ * whether or not its id was seen, so the answer does not tell a caller which ids exist.</p>
+ *
+ * <p>While the store has no room ({@link MessageIdStore#hasRoom}), a message that is not a copy is not
+ * taken: the call gets {@link Dispatch.Outcome#UNAVAILABLE} with the reason {@value #FULL_REASON} and may
+ * be sent again once ids have expired. A store that forgot a live id to make room would let a copy of an
+ * old message run again, and anyone who can send many messages could cause that. Size the store for the
+ * messages of one window. Copies are still recognised while the store is full.</p>
  *
  * <p>The first copy goes to the wrapped dispatcher. If that accepts it, the id is remembered, and
  * later copies are dropped without reaching the actor. A dropped copy still gets an accepted
@@ -67,6 +86,9 @@ public class DedupDispatcher implements Dispatcher {
     /** The reason given with {@link Dispatch.Outcome#UNAVAILABLE}. */
     public static final String UNAVAILABLE_REASON = "message id store unavailable";
 
+    /** The reason given with {@link Dispatch.Outcome#UNAVAILABLE} while the store has no room. */
+    public static final String FULL_REASON = "message id store full";
+
     /** How long after the first failure the store is tried again. */
     static final Duration FIRST_RETRY = Duration.ofSeconds(1);
 
@@ -81,6 +103,8 @@ public class DedupDispatcher implements Dispatcher {
     private final Set<String> pending = new LinkedHashSet<>();
     // The id whose check against the store failed; null when the store could be read.
     private String unreadId;
+    // Whether the last new message was refused for want of room; keeps the log to one line per fill.
+    private boolean full;
     private Duration wait = FIRST_RETRY;
     private long nextTryMillis;
 
@@ -98,12 +122,20 @@ public class DedupDispatcher implements Dispatcher {
     // Serialised so that two copies arriving together cannot both pass the check. The wrapped
     // dispatcher only puts the call in a mailbox, so the lock is held briefly.
     @Override
-    public synchronized Dispatch dispatch(ActorMessage message) {
+    public Dispatch dispatch(ActorMessage message) {
+        return dispatch(message, CallerIdentity.NONE);
+    }
+
+    @Override
+    public synchronized Dispatch dispatch(ActorMessage message, CallerIdentity caller) {
         if (!recover()) {
             return Dispatch.unavailable(UNAVAILABLE_REASON);
         }
-        String id = message.getMessageId();
-        String call = id + " (" + message.getActorName() + "/" + message.getActionName() + ")";
+        if (!inner.permits(message, caller)) {
+            return inner.dispatch(message, caller);
+        }
+        String id = keyOf(message);
+        String call = message.getMessageId() + " (" + message.getActorName() + "/" + message.getActionName() + ")";
         boolean duplicate;
         try {
             duplicate = seen.contains(id);
@@ -118,9 +150,18 @@ public class DedupDispatcher implements Dispatcher {
         if (duplicate) {
             logger.info("Dropping duplicate message " + call);
             return new Dispatch(true, CompletableFuture.completedFuture(
-                    new ActionResult(false, "Duplicate message " + id + " ignored")));
+                    new ActionResult(false, "Duplicate message " + message.getMessageId() + " ignored")));
         }
-        Dispatch dispatch = inner.dispatch(message);
+        if (!seen.hasRoom()) {
+            if (!full) {
+                full = true;
+                logger.severe("The message id store is full of ids that have not expired; taking no new messages"
+                        + " until some expire. Message " + call + " was not taken.");
+            }
+            return Dispatch.unavailable(FULL_REASON);
+        }
+        full = false;
+        Dispatch dispatch = inner.dispatch(message, caller);
         if (dispatch.accepted()) {
             try {
                 seen.add(id);
@@ -142,6 +183,16 @@ public class DedupDispatcher implements Dispatcher {
      * @return true when the dispatcher is available (calls are taken); false while the store
      *         still fails or it is too soon to try it again
      */
+    @Override
+    public boolean permits(ActorMessage message, CallerIdentity caller) {
+        return inner.permits(message, caller);
+    }
+
+    @Override
+    public boolean permits(ActorMessage message) {
+        return inner.permits(message);
+    }
+
     @Override
     public synchronized boolean recover() {
         if (unreadId == null && pending.isEmpty()) {
@@ -171,6 +222,24 @@ public class DedupDispatcher implements Dispatcher {
         wait = FIRST_RETRY;
         logger.info("The message id store works again; taking calls");
         return true;
+    }
+
+    /**
+     * The key under which a message is remembered: its id and a digest of its actor, action and arguments.
+     * Each part is length-prefixed, so no two different messages give the same text.
+     */
+    static String keyOf(ActorMessage message) {
+        try {
+            MessageDigest sha = MessageDigest.getInstance("SHA-256");
+            for (String part : new String[] {message.getActorName(), message.getActionName(), message.getArgs()}) {
+                byte[] bytes = (part == null ? "\u0000null" : part).getBytes(StandardCharsets.UTF_8);
+                sha.update((bytes.length + ":").getBytes(StandardCharsets.US_ASCII));
+                sha.update(bytes);
+            }
+            return message.getMessageId() + "#" + java.util.HexFormat.of().formatHex(sha.digest());
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 is required of every Java platform", e);
+        }
     }
 
     private void startBackoff() {

@@ -85,6 +85,11 @@ public class FileMessageIdStore implements MessageIdStore, AutoCloseable {
     }
 
     @Override
+    public boolean hasRoom() {
+        return memory.hasRoom();
+    }
+
+    @Override
     public synchronized void add(String messageId) {
         long now = clock.millis();
         try {
