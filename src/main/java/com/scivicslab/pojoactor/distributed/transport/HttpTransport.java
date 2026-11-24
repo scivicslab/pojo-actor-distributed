@@ -76,7 +76,10 @@ public class HttpTransport implements TransportLayer {
      * @since 5.0.0
      */
     public HttpTransport(SSLContext sslContext) {
-        HttpClient.Builder builder = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10));
+        // The client's own work runs on virtual threads: without an executor the JDK HttpClient makes a
+        // pool of real threads of its own, outside the ManagedThreadPool.
+        HttpClient.Builder builder = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10))
+                .executor(java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor());
         if (sslContext != null) {
             SSLParameters parameters = sslContext.getDefaultSSLParameters();
             parameters.setProtocols(new String[] {"TLSv1.3", "TLSv1.2"});
